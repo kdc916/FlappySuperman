@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Flappy Superman - Sound & Mobile Edition</title>
+  <title>Flappy Superman Mobile</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
     * {
@@ -16,7 +16,7 @@
     body {
       margin: 0;
       padding: 0;
-      background-color: #11161d;
+      background-color: #0b0f14;
       display: flex;
       justify-content: center;
       align-items: center;
@@ -26,13 +26,13 @@
     }
     #gameWrapper {
       position: relative;
+      width: 100%;
+      height: 100%;
+      max-width: 480px; /* 모바일 세로 비율 꽉 채움 */
+      max-height: 850px;
       display: flex;
       justify-content: center;
       align-items: center;
-      width: 100%;
-      height: 100%;
-      max-width: 960px;
-      max-height: 540px;
     }
     canvas {
       display: block;
@@ -41,14 +41,13 @@
       object-fit: contain;
       background: #5ea7d6;
       image-rendering: pixelated;
-      border: 3px solid #5aa5d6;
     }
   </style>
 </head>
 <body>
 
 <div id="gameWrapper">
-  <canvas id="gameCanvas" width="960" height="540"></canvas>
+  <canvas id="gameCanvas" width="450" height="800"></canvas>
 </div>
 
 <script>
@@ -56,42 +55,31 @@ const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
-// --- 8비트 Web Audio API 사운드 엔진 ---
+// --- Web Audio 사운드 ---
 let audioCtx = null;
-
 function initAudio() {
-  if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume();
-  }
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
 }
 
-// 비행 시 상승하는 칩튠 사운드
 function playFlapSound() {
   if (!audioCtx) return;
   try {
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.type = 'sawtooth';
-
     const now = audioCtx.currentTime;
-    osc.frequency.setValueAtTime(220, now);
-    osc.frequency.exponentialRampToValueAtTime(580, now + 0.12);
-
-    gain.gain.setValueAtTime(0.25, now);
+    osc.frequency.setValueAtTime(240, now);
+    osc.frequency.exponentialRampToValueAtTime(620, now + 0.12);
+    gain.gain.setValueAtTime(0.2, now);
     gain.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
-
     osc.connect(gain);
     gain.connect(audioCtx.destination);
-
     osc.start(now);
     osc.stop(now + 0.12);
   } catch(e) {}
 }
 
-// 점수 획득 시 아르페지오 코인 사운드
 function playScoreSound() {
   if (!audioCtx) return;
   try {
@@ -99,63 +87,55 @@ function playScoreSound() {
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.type = 'square';
-
-    osc.frequency.setValueAtTime(987.77, now); // B5
-    osc.frequency.setValueAtTime(1318.51, now + 0.08); // E6
-
-    gain.gain.setValueAtTime(0.2, now);
-    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
-
+    osc.frequency.setValueAtTime(987.77, now);
+    osc.frequency.setValueAtTime(1318.51, now + 0.08);
+    gain.gain.setValueAtTime(0.18, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.22);
     osc.connect(gain);
     gain.connect(audioCtx.destination);
-
     osc.start(now);
-    osc.stop(now + 0.25);
+    osc.stop(now + 0.22);
   } catch(e) {}
 }
 
-// 충돌 및 게임오버 시 레트로 폭발 사운드
 function playHitSound() {
   if (!audioCtx) return;
   try {
-    const bufferSize = audioCtx.sampleRate * 0.35;
+    const bufferSize = audioCtx.sampleRate * 0.3;
     const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
     const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = Math.random() * 2 - 1;
-    }
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
 
     const noise = audioCtx.createBufferSource();
     noise.buffer = buffer;
-
     const filter = audioCtx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.frequency.setValueAtTime(800, audioCtx.currentTime);
-    filter.frequency.exponentialRampToValueAtTime(60, audioCtx.currentTime + 0.35);
+    filter.frequency.exponentialRampToValueAtTime(60, audioCtx.currentTime + 0.3);
 
     const gain = audioCtx.createGain();
-    gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.35);
+    gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
 
     noise.connect(filter);
     filter.connect(gain);
     gain.connect(audioCtx.destination);
-
     noise.start();
   } catch(e) {}
 }
 
-// --- 게임 상태 및 데이터 ---
+// --- 게임 상태 ---
 let frames = 0;
 let score = 0;
-let highScore = localStorage.getItem('superman_hi_v2') || 0;
+let highScore = localStorage.getItem('superman_m_hi') || 0;
 let gameState = 'START';
 
 const particles = [];
 const speedTrails = [];
 const afterImages = [];
 
-const P_SZ = 3; 
+// 캐릭터 픽셀 도트
+const P_SZ = 2.4; 
 const supermanPixel = [
   [0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0],
   [0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0],
@@ -172,7 +152,7 @@ const supermanPixel = [
 ];
 
 const colorPalette = {
-  1: '#000000',
+  1: '#000',
   2: '#0d5bc6',
   3: '#ffcd9b',
   4: '#c51b1b',
@@ -180,23 +160,49 @@ const colorPalette = {
 };
 
 const superman = {
-  x: 220,
-  y: 240,
+  x: 90,
+  y: 360,
   w: 16 * P_SZ,
   h: 12 * P_SZ,
-  gravity: 0.20,
-  lift: -4.8,
+  gravity: 0.22,
+  lift: -5.2,
   velocity: 0,
-  
+
   draw() {
     ctx.save();
     ctx.translate(this.x + this.w / 2, this.y + this.h / 2);
-    
+
     let angle = Math.min(Math.PI / 4, Math.max(-Math.PI / 6, (this.velocity * 3.5) * Math.PI / 180));
     ctx.rotate(angle);
 
-    this.drawCape();
+    // 긴 망토
+    const wave1 = Math.sin(frames * 0.3) * 5;
+    const wave2 = Math.cos(frames * 0.35) * 6;
+    const sX = -this.w / 2 + 5;
+    const sY = -this.h / 2 + 8;
 
+    ctx.fillStyle = '#8b0c0c';
+    ctx.beginPath();
+    ctx.moveTo(sX, sY);
+    ctx.lineTo(sX - 36, sY - 10 + wave1);
+    ctx.lineTo(sX - 30, sY + 10 + wave2);
+    ctx.lineTo(sX, sY + 6);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#dc2626';
+    ctx.beginPath();
+    ctx.moveTo(sX, sY + 1);
+    ctx.lineTo(sX - 33, sY - 7 + wave1);
+    ctx.lineTo(sX - 26, sY + 12 + wave2);
+    ctx.lineTo(sX + 3, sY + 5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // 본체
     const startX = -this.w / 2;
     const startY = -this.h / 2;
     for (let r = 0; r < supermanPixel.length; r++) {
@@ -211,35 +217,6 @@ const superman = {
     ctx.restore();
   },
 
-  drawCape() {
-    const wave1 = Math.sin(frames * 0.3) * 6;
-    const wave2 = Math.cos(frames * 0.35) * 8;
-    const startX = -this.w / 2 + 6;
-    const startY = -this.h / 2 + 10;
-
-    ctx.fillStyle = '#9e0f0f';
-    ctx.beginPath();
-    ctx.moveTo(startX, startY);
-    ctx.lineTo(startX - 48, startY - 14 + wave1);
-    ctx.lineTo(startX - 40, startY + 12 + wave2);
-    ctx.lineTo(startX, startY + 8);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.fillStyle = '#dc2626';
-    ctx.beginPath();
-    ctx.moveTo(startX, startY + 2);
-    ctx.lineTo(startX - 44, startY - 10 + wave1);
-    ctx.lineTo(startX - 36, startY + 16 + wave2);
-    ctx.lineTo(startX + 4, startY + 6);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-  },
-  
   update() {
     this.velocity += this.gravity;
     this.y += this.velocity;
@@ -248,17 +225,18 @@ const superman = {
       afterImages.push({
         x: this.x,
         y: this.y,
-        alpha: 0.4,
+        alpha: 0.35,
         angle: Math.min(Math.PI / 4, Math.max(-Math.PI / 6, (this.velocity * 3.5) * Math.PI / 180))
       });
     }
 
     if (frames % 2 === 0) {
-      particles.push(new FlameParticle(this.x + 8 + Math.random() * 20, this.y + Math.random() * 20));
+      particles.push(new FlameParticle(this.x + 5 + Math.random() * 15, this.y + Math.random() * 15));
     }
 
-    if (this.y + this.h >= canvas.height - 60) {
-      this.y = canvas.height - 60 - this.h;
+    // 바닥 충돌
+    if (this.y + this.h >= canvas.height - 80) {
+      this.y = canvas.height - 80 - this.h;
       gameOver();
     }
     if (this.y <= 0) {
@@ -270,13 +248,13 @@ const superman = {
   flap() {
     this.velocity = this.lift;
     playFlapSound();
-    for (let i = 0; i < 4; i++) {
-      speedTrails.push(new SpeedLine(this.x - 10, this.y + Math.random() * 30));
+    for (let i = 0; i < 3; i++) {
+      speedTrails.push(new SpeedLine(this.x - 8, this.y + Math.random() * 25));
     }
   },
 
   reset() {
-    this.y = 240;
+    this.y = 360;
     this.velocity = 0;
   }
 };
@@ -285,11 +263,11 @@ class FlameParticle {
   constructor(x, y) {
     this.x = x;
     this.y = y;
-    this.size = Math.floor(Math.random() * 5) + 4;
-    this.vx = -(Math.random() * 2 + 2);
-    this.vy = (Math.random() - 0.5) * 3;
+    this.size = Math.floor(Math.random() * 4) + 3;
+    this.vx = -(Math.random() * 2 + 1.5);
+    this.vy = (Math.random() - 0.5) * 2.5;
     this.life = 1.0;
-    this.decay = Math.random() * 0.04 + 0.03;
+    this.decay = Math.random() * 0.05 + 0.03;
     this.color = Math.random() > 0.4 ? '#f97316' : '#facc15';
   }
   update() {
@@ -313,18 +291,18 @@ class SpeedLine {
   constructor(x, y) {
     this.x = x;
     this.y = y;
-    this.length = Math.floor(Math.random() * 40) + 30;
-    this.speed = Math.random() * 8 + 6;
-    this.alpha = 0.8;
+    this.length = Math.floor(Math.random() * 30) + 20;
+    this.speed = Math.random() * 7 + 5;
+    this.alpha = 0.7;
   }
   update() {
     this.x -= this.speed;
-    this.alpha -= 0.04;
+    this.alpha -= 0.05;
   }
   draw() {
     ctx.save();
     ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 2;
     ctx.globalAlpha = Math.max(0, this.alpha);
     ctx.beginPath();
     ctx.moveTo(this.x, this.y);
@@ -334,16 +312,18 @@ class SpeedLine {
   }
 }
 
+// 모바일 세로용 파이프 설정
 const pipes = {
   items: [],
   counter: 0,
 
   getGap() {
-    return Math.max(140, 185 - Math.min(score, 20) * 2);
+    // 세로 화면에 맞춰 넉넉한 통과 공간 제공 (190px -> 145px)
+    return Math.max(145, 190 - Math.min(score, 18) * 2.5);
   },
 
   getSpeed() {
-    return Math.min(3.2, 2.0 + Math.min(score, 25) * 0.05);
+    return Math.min(3.0, 1.8 + Math.min(score, 20) * 0.05);
   },
 
   drawPixelPipe(x, y, w, h, isBottom, theme) {
@@ -355,44 +335,45 @@ const pipes = {
     ctx.fillStyle = mainCol;
     ctx.fillRect(x, y, w, h);
     ctx.fillStyle = lightCol;
-    ctx.fillRect(x + 5, y, 8, h);
+    ctx.fillRect(x + 4, y, 7, h);
     ctx.fillStyle = darkCol;
-    ctx.fillRect(x + w - 12, y, 8, h);
+    ctx.fillRect(x + w - 10, y, 7, h);
     ctx.strokeStyle = '#000';
-    ctx.lineWidth = 3.5;
+    ctx.lineWidth = 3;
     ctx.strokeRect(x, y, w, h);
 
-    const capH = 26;
+    const capH = 24;
     const capY = isBottom ? y : y + h - capH;
     ctx.fillStyle = mainCol;
-    ctx.fillRect(x - 6, capY, w + 12, capH);
+    ctx.fillRect(x - 5, capY, w + 10, capH);
     ctx.fillStyle = lightCol;
-    ctx.fillRect(x - 2, capY, 8, capH);
+    ctx.fillRect(x - 2, capY, 7, capH);
     ctx.fillStyle = darkCol;
-    ctx.fillRect(x + w - 4, capY, 8, capH);
-    ctx.strokeRect(x - 6, capY, w + 12, capH);
+    ctx.fillRect(x + w - 3, capY, 7, capH);
+    ctx.strokeRect(x - 5, capY, w + 10, capH);
   },
 
   draw() {
     for (let p of this.items) {
       this.drawPixelPipe(p.x, 0, p.w, p.top, false, p.theme);
-      this.drawPixelPipe(p.x, canvas.height - 60 - p.bottom, p.w, p.bottom, true, p.theme);
+      this.drawPixelPipe(p.x, canvas.height - 80 - p.bottom, p.w, p.bottom, true, p.theme);
     }
   },
 
   update() {
-    const interval = Math.max(105, 145 - Math.min(score, 20) * 1.8);
+    // 세로 화면에서는 파이프 간격을 약 125프레임 수준으로 여유 있게 설정
+    const interval = Math.max(95, 125 - Math.min(score, 18) * 1.5);
 
     if (frames % Math.floor(interval) === 0) {
       const gap = this.getGap();
-      let maxTop = canvas.height - 60 - gap - 70;
-      let topHeight = Math.floor(Math.random() * (maxTop - 70 + 1)) + 70;
-      let bottomHeight = canvas.height - 60 - (topHeight + gap);
+      let maxTop = canvas.height - 80 - gap - 80;
+      let topHeight = Math.floor(Math.random() * (maxTop - 80 + 1)) + 80;
+      let bottomHeight = canvas.height - 80 - (topHeight + gap);
 
       this.counter++;
       this.items.push({
         x: canvas.width,
-        w: 64,
+        w: 58,
         top: topHeight,
         bottom: bottomHeight,
         theme: this.counter % 2 === 0 ? 'brown' : 'green',
@@ -406,13 +387,13 @@ const pipes = {
       let p = this.items[i];
       p.x -= currentSpeed;
 
-      let sLeft = superman.x + 8;
-      let sRight = superman.x + superman.w - 6;
-      let sTop = superman.y + 6;
-      let sBottom = superman.y + superman.h - 6;
+      let sLeft = superman.x + 6;
+      let sRight = superman.x + superman.w - 5;
+      let sTop = superman.y + 5;
+      let sBottom = superman.y + superman.h - 5;
 
-      if (sRight > p.x - 6 && sLeft < p.x + p.w + 6) {
-        if (sTop < p.top || sBottom > canvas.height - 60 - p.bottom) {
+      if (sRight > p.x - 5 && sLeft < p.x + p.w + 5) {
+        if (sTop < p.top || sBottom > canvas.height - 80 - p.bottom) {
           gameOver();
         }
       }
@@ -436,42 +417,42 @@ const pipes = {
   }
 };
 
+// 모바일 배경 렌더링
 function drawPixelCity() {
   ctx.fillStyle = '#5ea7d6';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+  // 구름
   ctx.fillStyle = '#e8f3fb';
-  drawCloud(70 - (frames * 0.3) % 1100, 70);
-  drawCloud(460 - (frames * 0.3) % 1100, 110);
-  drawCloud(820 - (frames * 0.3) % 1100, 80);
+  drawCloud(40 - (frames * 0.25) % 550, 110);
+  drawCloud(280 - (frames * 0.25) % 550, 160);
 
-  drawBuilding(50, 240, 90, 240, '#759fb8', '#a4c2d6');
-  drawBuilding(180, 180, 110, 300, '#8eb8d0', '#b9d5e7');
-  drawBuilding(330, 280, 80, 200, '#759fb8', '#a4c2d6');
-  drawBuilding(450, 220, 100, 260, '#8eb8d0', '#b9d5e7');
-  drawBuilding(600, 190, 95, 290, '#759fb8', '#a4c2d6');
-  drawBuilding(730, 260, 110, 220, '#8eb8d0', '#b9d5e7');
-  drawBuilding(880, 210, 90, 270, '#759fb8', '#a4c2d6');
+  // 모바일 빌딩
+  drawBuilding(20, 420, 75, 300, '#759fb8', '#a4c2d6');
+  drawBuilding(115, 340, 90, 380, '#8eb8d0', '#b9d5e7');
+  drawBuilding(225, 400, 80, 320, '#759fb8', '#a4c2d6');
+  drawBuilding(325, 320, 105, 400, '#8eb8d0', '#b9d5e7');
 
+  // 지면 (모래 & 잔디)
   ctx.fillStyle = '#ddcc88';
-  ctx.fillRect(0, canvas.height - 60, canvas.width, 60);
+  ctx.fillRect(0, canvas.height - 80, canvas.width, 80);
 
   ctx.fillStyle = '#78b833';
-  ctx.fillRect(0, canvas.height - 60, canvas.width, 16);
+  ctx.fillRect(0, canvas.height - 80, canvas.width, 18);
 
   ctx.strokeStyle = '#99cf43';
-  ctx.lineWidth = 5;
+  ctx.lineWidth = 4;
   ctx.beginPath();
-  let shift = (frames * 2) % 32;
-  for (let x = -32; x < canvas.width + 32; x += 32) {
-    ctx.moveTo(x - shift, canvas.height - 60);
-    ctx.lineTo(x + 20 - shift, canvas.height - 44);
+  let shift = (frames * 2) % 24;
+  for (let x = -24; x < canvas.width + 24; x += 24) {
+    ctx.moveTo(x - shift, canvas.height - 80);
+    ctx.lineTo(x + 16 - shift, canvas.height - 62);
   }
   ctx.stroke();
 
   ctx.strokeStyle = '#000';
   ctx.lineWidth = 3;
-  ctx.strokeRect(0, canvas.height - 60, canvas.width, 60);
+  ctx.strokeRect(0, canvas.height - 80, canvas.width, 80);
 }
 
 function drawBuilding(x, y, w, h, bodyCol, winCol) {
@@ -482,46 +463,53 @@ function drawBuilding(x, y, w, h, bodyCol, winCol) {
   ctx.strokeRect(x, y, w, h);
 
   ctx.fillStyle = winCol;
-  for (let wx = x + 10; wx < x + w - 10; wx += 20) {
-    for (let wy = y + 16; wy < y + h - 16; wy += 26) {
-      ctx.fillRect(wx, wy, 12, 16);
-      ctx.strokeRect(wx, wy, 12, 16);
+  for (let wx = x + 8; wx < x + w - 8; wx += 16) {
+    for (let wy = y + 14; wy < y + h - 14; wy += 22) {
+      ctx.fillRect(wx, wy, 10, 14);
+      ctx.strokeRect(wx, wy, 10, 14);
     }
   }
 }
 
 function drawCloud(cx, cy) {
-  ctx.fillRect(cx, cy + 12, 90, 24);
-  ctx.fillRect(cx + 16, cy, 60, 18);
-  ctx.fillRect(cx + 26, cy - 10, 36, 12);
+  ctx.fillRect(cx, cy + 10, 70, 18);
+  ctx.fillRect(cx + 12, cy, 46, 14);
+  ctx.fillRect(cx + 20, cy - 8, 28, 10);
 }
 
+// 모바일 레이아웃 UI
 function drawUI() {
   ctx.textAlign = 'center';
-  ctx.font = '28px "Press Start 2P", monospace';
 
   if (gameState === 'PLAYING') {
-    drawTextWithOutline(`SCORE: ${score}`, 380, 50, '#fff', '#000', 4);
-    drawTextWithOutline(`HIGH SCORE`, 800, 50, '#fff', '#000', 4);
-    drawTextWithOutline(`${highScore}`, 800, 90, '#fff', '#000', 4);
+    ctx.font = '24px "Press Start 2P", monospace';
+    drawTextWithOutline(`${score}`, canvas.width / 2, 80, '#fff', '#000', 5);
   } else if (gameState === 'START') {
-    drawTextWithOutline(`SCORE: 0`, 380, 50, '#fff', '#000', 4);
-    drawTextWithOutline(`HIGH SCORE`, 800, 50, '#fff', '#000', 4);
-    drawTextWithOutline(`${highScore}`, 800, 90, '#fff', '#000', 4);
+    ctx.font = '16px "Press Start 2P", monospace';
+    drawTextWithOutline(`BEST: ${highScore}`, canvas.width / 2, 70, '#facc15', '#000', 4);
 
+    ctx.font = '22px "Press Start 2P", monospace';
     drawTextWithOutline('TAP TO FLAP', canvas.width / 2, 280, '#ffffff', '#000', 5);
-    ctx.font = '20px "Press Start 2P", monospace';
-    drawTextWithOutline('TOUCH SCREEN OR SPACE', canvas.width / 2, 360, '#ffffff', '#000', 4);
+
+    ctx.font = '14px "Press Start 2P", monospace';
+    drawTextWithOutline('TOUCH SCREEN TO START', canvas.width / 2, 340, '#ffffff', '#000', 4);
   } else if (gameState === 'GAMEOVER') {
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(230, 140, 500, 260);
+    // 팝업 박스 크기 및 폰트 위치 모바일 비례 최적화
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(35, 230, 380, 260);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(35, 230, 380, 260);
 
-    drawTextWithOutline('GAME OVER', canvas.width / 2, 210, '#ef4444', '#000', 5);
+    ctx.font = '24px "Press Start 2P", monospace';
+    drawTextWithOutline('GAME OVER', canvas.width / 2, 290, '#ef4444', '#000', 5);
 
-    ctx.font = '18px "Press Start 2P", monospace';
-    drawTextWithOutline(`FINAL SCORE : ${score}`, canvas.width / 2, 270, '#fff', '#000', 3);
-    drawTextWithOutline(`BEST SCORE  : ${highScore}`, canvas.width / 2, 310, '#facc15', '#000', 3);
-    drawTextWithOutline('TAP TO RETRY', canvas.width / 2, 365, '#38bdf8', '#000', 3);
+    ctx.font = '15px "Press Start 2P", monospace';
+    drawTextWithOutline(`FINAL SCORE : ${score}`, canvas.width / 2, 350, '#fff', '#000', 4);
+    drawTextWithOutline(`BEST SCORE  : ${highScore}`, canvas.width / 2, 390, '#facc15', '#000', 4);
+
+    ctx.font = '14px "Press Start 2P", monospace';
+    drawTextWithOutline('TAP TO RETRY', canvas.width / 2, 445, '#38bdf8', '#000', 4);
   }
 }
 
@@ -539,7 +527,7 @@ function gameOver() {
     gameState = 'GAMEOVER';
     if (score > highScore) {
       highScore = score;
-      localStorage.setItem('superman_hi_v2', highScore);
+      localStorage.setItem('superman_m_hi', highScore);
     }
   }
 }
@@ -562,22 +550,19 @@ function handleInput() {
   }
 }
 
-// 키보드 이벤트
-window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' || e.code === 'ArrowUp') {
-    e.preventDefault();
-    handleInput();
-  }
-});
-
-// 모바일 터치 및 마우스 이벤트 (더블탭 줌 및 딜레이 방지)
+// 터치 및 키 입력
 window.addEventListener('touchstart', (e) => {
   e.preventDefault();
   handleInput();
 }, { passive: false });
 
 window.addEventListener('mousedown', (e) => {
-  if (e.button === 0) {
+  if (e.button === 0) handleInput();
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
     handleInput();
   }
 });
@@ -593,8 +578,7 @@ function renderAfterImages() {
     ctx.fillStyle = '#60a5fa';
     ctx.fillRect(-superman.w / 2, -superman.h / 2, superman.w, superman.h);
     ctx.fillStyle = '#dc2626';
-    ctx.fillRect(-superman.w / 2 - 25, -superman.h / 2 + 5, 25, 12);
-
+    ctx.fillRect(-superman.w / 2 - 20, -superman.h / 2 + 4, 20, 10);
     ctx.restore();
 
     img.alpha -= 0.05;
