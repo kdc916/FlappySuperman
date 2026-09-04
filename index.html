@@ -2,8 +2,8 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Flappy Superman Mobile</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Flappy Superman Mobile Perfect</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
     * {
@@ -13,49 +13,45 @@
       -webkit-touch-callout: none;
       touch-action: manipulation;
     }
-    body {
+    html, body {
       margin: 0;
       padding: 0;
-      background-color: #0b0f14;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      width: 100vw;
-      height: 100vh;
-      overflow: hidden;
-    }
-    #gameWrapper {
-      position: relative;
       width: 100%;
       height: 100%;
-      max-width: 480px; /* 모바일 세로 비율 꽉 채움 */
-      max-height: 850px;
-      display: flex;
-      justify-content: center;
-      align-items: center;
+      overflow: hidden;
+      background-color: #5ea7d6;
     }
     canvas {
       display: block;
       width: 100%;
       height: 100%;
-      object-fit: contain;
-      background: #5ea7d6;
       image-rendering: pixelated;
     }
   </style>
 </head>
 <body>
 
-<div id="gameWrapper">
-  <canvas id="gameCanvas" width="450" height="800"></canvas>
-</div>
+<canvas id="gameCanvas"></canvas>
 
 <script>
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
-// --- Web Audio 사운드 ---
+// 모바일 기기 전체 뷰포트에 캔버스 해상도 1:1 동기화
+let W = 0;
+let H = 0;
+const FLOOR_H = 75; // 하단 잔디/모래 바닥 높이 고정
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  ctx.imageSmoothingEnabled = false;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// --- 8비트 사운드 효과 ---
 let audioCtx = null;
 function initAudio() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -124,10 +120,10 @@ function playHitSound() {
   } catch(e) {}
 }
 
-// --- 게임 상태 ---
+// --- 게임 변수 ---
 let frames = 0;
 let score = 0;
-let highScore = localStorage.getItem('superman_m_hi') || 0;
+let highScore = localStorage.getItem('superman_m_hi_fixed') || 0;
 let gameState = 'START';
 
 const particles = [];
@@ -160,8 +156,8 @@ const colorPalette = {
 };
 
 const superman = {
-  x: 90,
-  y: 360,
+  x: 60,
+  y: 250,
   w: 16 * P_SZ,
   h: 12 * P_SZ,
   gravity: 0.22,
@@ -175,7 +171,7 @@ const superman = {
     let angle = Math.min(Math.PI / 4, Math.max(-Math.PI / 6, (this.velocity * 3.5) * Math.PI / 180));
     ctx.rotate(angle);
 
-    // 긴 망토
+    // 펄럭이는 망토
     const wave1 = Math.sin(frames * 0.3) * 5;
     const wave2 = Math.cos(frames * 0.35) * 6;
     const sX = -this.w / 2 + 5;
@@ -202,7 +198,7 @@ const superman = {
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // 본체
+    // 몸체 픽셀
     const startX = -this.w / 2;
     const startY = -this.h / 2;
     for (let r = 0; r < supermanPixel.length; r++) {
@@ -234,11 +230,12 @@ const superman = {
       particles.push(new FlameParticle(this.x + 5 + Math.random() * 15, this.y + Math.random() * 15));
     }
 
-    // 바닥 충돌
-    if (this.y + this.h >= canvas.height - 80) {
-      this.y = canvas.height - 80 - this.h;
+    // 바닥 충돌 검사 (H - FLOOR_H)
+    if (this.y + this.h >= H - FLOOR_H) {
+      this.y = H - FLOOR_H - this.h;
       gameOver();
     }
+    // 천장
     if (this.y <= 0) {
       this.y = 0;
       this.velocity = 0;
@@ -254,7 +251,7 @@ const superman = {
   },
 
   reset() {
-    this.y = 360;
+    this.y = H * 0.4;
     this.velocity = 0;
   }
 };
@@ -312,14 +309,13 @@ class SpeedLine {
   }
 }
 
-// 모바일 세로용 파이프 설정
+// 화면 상단 천장부터 하단 바닥까지 빈틈없이 연결되는 파이프 관리
 const pipes = {
   items: [],
   counter: 0,
 
   getGap() {
-    // 세로 화면에 맞춰 넉넉한 통과 공간 제공 (190px -> 145px)
-    return Math.max(145, 190 - Math.min(score, 18) * 2.5);
+    return Math.max(150, 195 - Math.min(score, 18) * 2.5);
   },
 
   getSpeed() {
@@ -332,6 +328,7 @@ const pipes = {
     const lightCol = isGreen ? '#a3e635' : '#e09848';
     const darkCol = isGreen ? '#4c7c19' : '#683f12';
 
+    // 기둥 몸통 (0부터 완전히 꽉 차게 렌더링)
     ctx.fillStyle = mainCol;
     ctx.fillRect(x, y, w, h);
     ctx.fillStyle = lightCol;
@@ -342,6 +339,7 @@ const pipes = {
     ctx.lineWidth = 3;
     ctx.strokeRect(x, y, w, h);
 
+    // 파이프 턱(Cap)
     const capH = 24;
     const capY = isBottom ? y : y + h - capH;
     ctx.fillStyle = mainCol;
@@ -354,25 +352,29 @@ const pipes = {
   },
 
   draw() {
+    const playableH = H - FLOOR_H;
     for (let p of this.items) {
+      // 상단 파이프: y = 0 부터 p.top 까지 빈틈없이 연결
       this.drawPixelPipe(p.x, 0, p.w, p.top, false, p.theme);
-      this.drawPixelPipe(p.x, canvas.height - 80 - p.bottom, p.w, p.bottom, true, p.theme);
+      // 하단 파이프: playableH - p.bottom 부터 playableH 까지 바닥에 완벽 밀착
+      this.drawPixelPipe(p.x, playableH - p.bottom, p.w, p.bottom, true, p.theme);
     }
   },
 
   update() {
-    // 세로 화면에서는 파이프 간격을 약 125프레임 수준으로 여유 있게 설정
     const interval = Math.max(95, 125 - Math.min(score, 18) * 1.5);
+    const playableH = H - FLOOR_H;
 
     if (frames % Math.floor(interval) === 0) {
       const gap = this.getGap();
-      let maxTop = canvas.height - 80 - gap - 80;
-      let topHeight = Math.floor(Math.random() * (maxTop - 80 + 1)) + 80;
-      let bottomHeight = canvas.height - 80 - (topHeight + gap);
+      const minP = 70;
+      let maxTop = playableH - gap - minP;
+      let topHeight = Math.floor(Math.random() * (maxTop - minP + 1)) + minP;
+      let bottomHeight = playableH - (topHeight + gap);
 
       this.counter++;
       this.items.push({
-        x: canvas.width,
+        x: W,
         w: 58,
         top: topHeight,
         bottom: bottomHeight,
@@ -393,7 +395,7 @@ const pipes = {
       let sBottom = superman.y + superman.h - 5;
 
       if (sRight > p.x - 5 && sLeft < p.x + p.w + 5) {
-        if (sTop < p.top || sBottom > canvas.height - 80 - p.bottom) {
+        if (sTop < p.top || sBottom > playableH - p.bottom) {
           gameOver();
         }
       }
@@ -404,7 +406,7 @@ const pipes = {
         playScoreSound();
       }
 
-      if (p.x + p.w < -20) {
+      if (p.x + p.w < -30) {
         this.items.splice(i, 1);
         i--;
       }
@@ -417,42 +419,47 @@ const pipes = {
   }
 };
 
-// 모바일 배경 렌더링
+// 배경 및 하단 지면 렌더링
 function drawPixelCity() {
+  // 하늘
   ctx.fillStyle = '#5ea7d6';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, W, H);
 
   // 구름
   ctx.fillStyle = '#e8f3fb';
-  drawCloud(40 - (frames * 0.25) % 550, 110);
-  drawCloud(280 - (frames * 0.25) % 550, 160);
+  drawCloud((W * 0.1) - (frames * 0.25) % (W + 200), H * 0.15);
+  drawCloud((W * 0.6) - (frames * 0.25) % (W + 200), H * 0.22);
 
-  // 모바일 빌딩
-  drawBuilding(20, 420, 75, 300, '#759fb8', '#a4c2d6');
-  drawBuilding(115, 340, 90, 380, '#8eb8d0', '#b9d5e7');
-  drawBuilding(225, 400, 80, 320, '#759fb8', '#a4c2d6');
-  drawBuilding(325, 320, 105, 400, '#8eb8d0', '#b9d5e7');
+  // 반응형 배경 빌딩 (화면 하단 기준 고정)
+  const baseY = H - FLOOR_H;
+  drawBuilding(W * 0.05, baseY - 240, 75, 240, '#759fb8', '#a4c2d6');
+  drawBuilding(W * 0.28, baseY - 320, 90, 320, '#8eb8d0', '#b9d5e7');
+  drawBuilding(W * 0.55, baseY - 260, 80, 260, '#759fb8', '#a4c2d6');
+  drawBuilding(W * 0.78, baseY - 340, 95, 340, '#8eb8d0', '#b9d5e7');
 
-  // 지면 (모래 & 잔디)
+  // 화면 최하단 바닥 (모래 & 잔디)
   ctx.fillStyle = '#ddcc88';
-  ctx.fillRect(0, canvas.height - 80, canvas.width, 80);
+  ctx.fillRect(0, baseY, W, FLOOR_H);
 
   ctx.fillStyle = '#78b833';
-  ctx.fillRect(0, canvas.height - 80, canvas.width, 18);
+  ctx.fillRect(0, baseY, W, 18);
 
   ctx.strokeStyle = '#99cf43';
   ctx.lineWidth = 4;
   ctx.beginPath();
   let shift = (frames * 2) % 24;
-  for (let x = -24; x < canvas.width + 24; x += 24) {
-    ctx.moveTo(x - shift, canvas.height - 80);
-    ctx.lineTo(x + 16 - shift, canvas.height - 62);
+  for (let x = -24; x < W + 24; x += 24) {
+    ctx.moveTo(x - shift, baseY);
+    ctx.lineTo(x + 16 - shift, baseY + 18);
   }
   ctx.stroke();
 
   ctx.strokeStyle = '#000';
   ctx.lineWidth = 3;
-  ctx.strokeRect(0, canvas.height - 80, canvas.width, 80);
+  ctx.beginPath();
+  ctx.moveTo(0, baseY);
+  ctx.lineTo(W, baseY);
+  ctx.stroke();
 }
 
 function drawBuilding(x, y, w, h, bodyCol, winCol) {
@@ -477,39 +484,43 @@ function drawCloud(cx, cy) {
   ctx.fillRect(cx + 20, cy - 8, 28, 10);
 }
 
-// 모바일 레이아웃 UI
+// 화면 중앙 기준 반응형 UI 렌더링
 function drawUI() {
   ctx.textAlign = 'center';
 
   if (gameState === 'PLAYING') {
     ctx.font = '24px "Press Start 2P", monospace';
-    drawTextWithOutline(`${score}`, canvas.width / 2, 80, '#fff', '#000', 5);
+    drawTextWithOutline(`${score}`, W / 2, 70, '#fff', '#000', 5);
   } else if (gameState === 'START') {
-    ctx.font = '16px "Press Start 2P", monospace';
-    drawTextWithOutline(`BEST: ${highScore}`, canvas.width / 2, 70, '#facc15', '#000', 4);
+    ctx.font = '14px "Press Start 2P", monospace';
+    drawTextWithOutline(`BEST: ${highScore}`, W / 2, 60, '#facc15', '#000', 4);
 
     ctx.font = '22px "Press Start 2P", monospace';
-    drawTextWithOutline('TAP TO FLAP', canvas.width / 2, 280, '#ffffff', '#000', 5);
+    drawTextWithOutline('TAP TO FLAP', W / 2, H * 0.38, '#ffffff', '#000', 5);
 
-    ctx.font = '14px "Press Start 2P", monospace';
-    drawTextWithOutline('TOUCH SCREEN TO START', canvas.width / 2, 340, '#ffffff', '#000', 4);
+    ctx.font = '13px "Press Start 2P", monospace';
+    drawTextWithOutline('TOUCH SCREEN TO FLY', W / 2, H * 0.44, '#ffffff', '#000', 4);
   } else if (gameState === 'GAMEOVER') {
-    // 팝업 박스 크기 및 폰트 위치 모바일 비례 최적화
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(35, 230, 380, 260);
+    const boxW = Math.min(360, W * 0.88);
+    const boxH = 240;
+    const boxX = (W - boxW) / 2;
+    const boxY = (H - boxH) / 2;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(boxX, boxY, boxW, boxH);
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 3;
-    ctx.strokeRect(35, 230, 380, 260);
+    ctx.strokeRect(boxX, boxY, boxW, boxH);
 
-    ctx.font = '24px "Press Start 2P", monospace';
-    drawTextWithOutline('GAME OVER', canvas.width / 2, 290, '#ef4444', '#000', 5);
-
-    ctx.font = '15px "Press Start 2P", monospace';
-    drawTextWithOutline(`FINAL SCORE : ${score}`, canvas.width / 2, 350, '#fff', '#000', 4);
-    drawTextWithOutline(`BEST SCORE  : ${highScore}`, canvas.width / 2, 390, '#facc15', '#000', 4);
+    ctx.font = '22px "Press Start 2P", monospace';
+    drawTextWithOutline('GAME OVER', W / 2, boxY + 55, '#ef4444', '#000', 5);
 
     ctx.font = '14px "Press Start 2P", monospace';
-    drawTextWithOutline('TAP TO RETRY', canvas.width / 2, 445, '#38bdf8', '#000', 4);
+    drawTextWithOutline(`FINAL SCORE : ${score}`, W / 2, boxY + 110, '#fff', '#000', 4);
+    drawTextWithOutline(`BEST SCORE  : ${highScore}`, W / 2, boxY + 145, '#facc15', '#000', 4);
+
+    ctx.font = '13px "Press Start 2P", monospace';
+    drawTextWithOutline('TAP TO RETRY', W / 2, boxY + 198, '#38bdf8', '#000', 4);
   }
 }
 
@@ -527,7 +538,7 @@ function gameOver() {
     gameState = 'GAMEOVER';
     if (score > highScore) {
       highScore = score;
-      localStorage.setItem('superman_m_hi', highScore);
+      localStorage.setItem('superman_m_hi_fixed', highScore);
     }
   }
 }
@@ -550,7 +561,6 @@ function handleInput() {
   }
 }
 
-// 터치 및 키 입력
 window.addEventListener('touchstart', (e) => {
   e.preventDefault();
   handleInput();
