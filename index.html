@@ -465,26 +465,26 @@ const mix3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], 
 const rgb = c => 'rgb(' + Math.round(c[0]) + ',' + Math.round(c[1]) + ',' + Math.round(c[2]) + ')';
 const csv = c => Math.round(c[0]) + ',' + Math.round(c[1]) + ',' + Math.round(c[2]);
 
-// 해: 동쪽(오른쪽)에서 떠서 호를 그리며 서쪽 건물 뒤로 진다. 고도가 낮을수록 크고 붉어진다.
+// 해: 오른쪽에서 떠서 호를 그리며 주인공 뒤를 지나 왼쪽 건물 뒤로 진다. 고도가 낮을수록 크고 붉어진다.
 function sunLight(T) {
   const u = ((T - 0.86 + 1) % 1) / 0.5;
-  if (u > 1.08) return { vis: false, weight: 0 };
-  const x = VW * (0.85 - 0.6 * u), y = PLAY_H + 50 - Math.sin(Math.PI * Math.min(u, 1)) * PLAY_H * 0.78 + Math.max(0, u - 1) * 600;
+  if (u > 1.08) return { vis: false, weight: 0, k: 0, x: 0, y: 0, r: 1 };
+  const x = VW * (0.88 - 0.86 * u), y = PLAY_H + 50 - Math.sin(Math.PI * Math.min(u, 1)) * PLAY_H * 0.78 + Math.max(0, u - 1) * 600;
   const e = smooth(clamp((PLAY_H - 110 - y) / 250, 0, 1));
   const r = lerp(44, 26, e);
   return {
     vis: true, sun: true, x, y, r, e,
     core: mix3([255, 244, 208], [255, 255, 238], e), rgb: mix3([255, 150, 66], [255, 232, 160], e),
     disc: mix3([255, 214, 130], [255, 243, 160], e), discHi: mix3([255, 238, 190], [255, 251, 224], e),
-    k: lerp(0.76, 0.5, e), halo: lerp(420, 300, e), refl: lerp(0.6, 0.22, e),
+    k: lerp(0.68, 0.5, e), halo: lerp(400, 300, e), refl: lerp(0.6, 0.22, e),
     weight: smooth(clamp((PLAY_H + r - y) / 70, 0, 1))
   };
 }
 function moonLight(T) {
   const v = (T - 0.36) / 0.5;
-  if (v < -0.04 || v > 1.04) return { vis: false, weight: 0 };
+  if (v < -0.04 || v > 1.04) return { vis: false, weight: 0, k: 0, x: 0, y: 0, r: 1 };
   const vc = clamp(v, 0, 1);
-  const x = VW * (0.85 - 0.6 * v), y = PLAY_H + 50 - Math.sin(Math.PI * vc) * PLAY_H * 0.84 + Math.abs(v - vc) * 600;
+  const x = VW * (0.88 - 0.86 * v), y = PLAY_H + 50 - Math.sin(Math.PI * vc) * PLAY_H * 0.84 + Math.abs(v - vc) * 600;
   return {
     vis: true, sun: false, x, y, r: 24, e: 1,
     core: [236, 243, 255], rgb: [146, 182, 255], disc: [244, 241, 208], discHi: [213, 208, 166],
@@ -1079,7 +1079,7 @@ function drawGround(sx, tintCol, tintA) {
   }
 }
 
-function drawCape() {
+function drawCape(g) {
   // 어깨에서 뒤로 흩날리는 망토 (2유닛 도트 기둥으로 그린다)
   const cols = 17;
   for (let pass = 0; pass < 2; pass++) {
@@ -1089,23 +1089,175 @@ function drawCape() {
       const y = Math.round((-7 + wave) / 2) * 2;
       const th = i < 3 ? 6 : i > 13 ? 6 : 8;
       if (pass === 0) {
-        ctx.fillStyle = INK;
-        ctx.fillRect(x - (i === cols - 1 ? 2 : 0), y - 2, 2 + (i === cols - 1 ? 2 : 0), th + 4);
+        g.fillStyle = INK;
+        g.fillRect(x - (i === cols - 1 ? 2 : 0), y - 2, 2 + (i === cols - 1 ? 2 : 0), th + 4);
       } else {
-        ctx.fillStyle = '#e8408f'; ctx.fillRect(x, y, 2, th);
-        ctx.fillStyle = '#ff7ab8'; ctx.fillRect(x, y, 2, 2);
-        ctx.fillStyle = '#a82468'; ctx.fillRect(x, y + th - 2, 2, 2);
+        g.fillStyle = '#e8408f'; g.fillRect(x, y, 2, th);
+        g.fillStyle = '#ff7ab8'; g.fillRect(x, y, 2, 2);
+        g.fillStyle = '#a82468'; g.fillRect(x, y + th - 2, 2, 2);
       }
     }
   }
+}
+/* --- 주인공 조명 ---
+   주인공(망토 포함)을 작은 버퍼에 먼저 그린 뒤 그 모양 안에서만 빛을 입힌다.
+   1) 시간대 색(노을/밤)  2) 역광일수록 어두워지는 실루엣  3) 광원 쪽 가장자리의 림 라이트 */
+const HB_W = 88, HB_H = 60, HB_CX = 52, HB_CY = 30;
+const [heroCv, heroG] = makeCanvas(HB_W, HB_H);
+const [rimCv, rimG] = makeCanvas(HB_W, HB_H);
+let heroProx = 0;                      // 광원이 주인공 바로 뒤에 있는 정도 0~1
+function buildHero(env, hy, hr) {
+  const g = heroG, lt = env.light;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+  g.clearRect(0, 0, HB_W, HB_H);
+  g.setTransform(1, 0, 0, 1, HB_CX, HB_CY);
+  drawCape(g);
+  g.drawImage(heroSprite, -HERO_W / 2, -HERO_H / 2, HERO_W, HERO_H);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+
+  g.globalCompositeOperation = 'source-atop';
+  if (env.tintA > 0.004) {
+    g.globalAlpha = env.tintA * 0.85; g.fillStyle = env.tintCol;
+    g.fillRect(0, 0, HB_W, HB_H);
+  }
+  heroProx = 0;
+  if (lt.weight > 0.01) {
+    const dx = lt.x - heroX, dy = lt.y - hy, d = Math.hypot(dx, dy) || 1;
+    const prox = smooth(clamp(1 - (d - 40) / 170, 0, 1));
+    heroProx = prox * prox * lt.weight;
+    // 역광: 빛을 등질수록 몸이 어둡게 가라앉는다
+    g.globalAlpha = 0.42 * prox * prox * lt.weight * (lt.sun ? 1 : 0.7);
+    g.fillStyle = lt.sun ? '#1a0e1c' : '#070a24';
+    g.fillRect(0, 0, HB_W, HB_H);
+
+    // 림 라이트: 광원 방향으로 한 칸 밀어 뺀 가장자리만 빛 색으로 칠한다
+    const c = Math.cos(-hr), sn = Math.sin(-hr);
+    const lx = (dx * c - dy * sn) / d, ly = (dx * sn + dy * c) / d;
+    const ox = Math.abs(lx) > 0.38 ? -Math.sign(lx) * 2 : 0, oy = Math.abs(ly) > 0.38 ? -Math.sign(ly) * 2 : 0;
+    const r = rimG;
+    r.globalCompositeOperation = 'source-over'; r.globalAlpha = 1;
+    r.clearRect(0, 0, HB_W, HB_H);
+    r.drawImage(heroCv, 0, 0);
+    r.globalCompositeOperation = 'destination-out';
+    r.drawImage(heroCv, ox, oy);
+    r.globalCompositeOperation = 'source-in';
+    r.fillStyle = rgb(mix3(lt.rgb, lt.core, 0.6));
+    r.fillRect(0, 0, HB_W, HB_H);
+    g.globalCompositeOperation = 'source-atop';
+    g.globalAlpha = clamp(lt.weight * (0.4 + 0.6 * prox) * (lt.sun ? 1 : 0.75), 0, 1);
+    g.drawImage(rimCv, 0, 0);
+  }
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
 }
 function drawHero(y, rot) {
   ctx.save();
   ctx.translate(R(heroX), R(y));
   ctx.rotate(rot);
-  drawCape();
-  ctx.drawImage(heroSprite, -HERO_W / 2, -HERO_H / 2, HERO_W, HERO_H);
+  ctx.drawImage(heroCv, -HB_CX, -HB_CY);
   ctx.restore();
+}
+
+/* --- 주인공 주변 빛줄기 ---
+   해나 달이 주인공 뒤에 올 때, 주인공 주변만 2배 해상도로 다시 광산란을 계산한다.
+   몸과 망토의 윤곽이 빛을 가르면서 실루엣 둘레로 빛줄기가 뻗어 나온다. */
+const LR = 240, LG = 2, LN = LR * 2 / LG;
+const [hOccCv, hOccG] = makeCanvas(LN, LN);
+const [hBlurCv, hBlurG] = makeCanvas(LN, LN);
+const [hRayCv, hRayG] = makeCanvas(LN, LN);
+function drawHeroRays(lt, camX, hy, hr, sx) {
+  const I = heroProx * Math.min(1, lt.k * 1.1);
+  if (!fxRays || !(I >= 0.02)) return;
+  const ox = heroX - LR, oy = hy - LR;
+  const mod = (v, m) => ((v % m) + m) % m;
+
+  let g = hOccG;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+  g.clearRect(0, 0, LN, LN);
+  g.setTransform(1 / LG, 0, 0, 1 / LG, -ox / LG, -oy / LG);
+  const R1 = lt.r * 3.4;
+  const grad = g.createRadialGradient(lt.x, lt.y, 0, lt.x, lt.y, R1);
+  grad.addColorStop(0, 'rgba(' + csv(lt.core) + ',1)');
+  grad.addColorStop(0.3, 'rgba(' + csv(lt.core) + ',1)');
+  grad.addColorStop(0.55, 'rgba(' + csv(lt.rgb) + ',0.6)');
+  grad.addColorStop(1, 'rgba(' + csv(lt.rgb) + ',0)');
+  g.fillStyle = grad;
+  g.fillRect(lt.x - R1, lt.y - R1, R1 * 2, R1 * 2);
+
+  // 가리는 것들: 건물, 기둥, 그리고 주인공의 실제 윤곽(망토 포함)
+  g.globalCompositeOperation = 'destination-out';
+  g.imageSmoothingEnabled = true;
+  const occLayer = (Ly, off, a) => {
+    const w = Ly.W * 2, h = Ly.H * 2, y = PLAY_H - h + 2;
+    if (y > oy + LR * 2) return;
+    g.globalAlpha = a;
+    for (let x = -mod(off, w); x < ox + LR * 2; x += w) if (x + w > ox) g.drawImage(Ly.imgs[0], x, y, w, h);
+  };
+  occLayer(FAR, sx * 0.18, 0.8);
+  occLayer(NEAR, sx * 0.38, 1);
+  g.globalAlpha = 1; g.fillStyle = '#000';
+  g.fillRect(ox, PLAY_H, LR * 2, LR * 2);
+  for (const p of pipes) {
+    const x = p.wx - camX + heroX;
+    if (x > ox + LR * 2 || x + PIPE_W < ox) continue;
+    const c = pipeCenter(p), top = c - p.gap / 2, bot = c + p.gap / 2;
+    g.fillRect(x, oy - 10, PIPE_W, top - CAP_H - oy + 10);
+    g.fillRect(x - CAP_OVER, top - CAP_H, PIPE_W + CAP_OVER * 2, CAP_H);
+    g.fillRect(x - CAP_OVER, bot, PIPE_W + CAP_OVER * 2, CAP_H);
+    g.fillRect(x, bot + CAP_H, PIPE_W, PLAY_H - bot - CAP_H + 10);
+  }
+  g.save();
+  g.translate(heroX, hy); g.rotate(hr);
+  g.drawImage(heroCv, -HB_CX, -HB_CY);
+  g.restore();
+
+  // 광원 중심 방사형 블러 (2단계)
+  const cx = (lt.x - ox) / LG, cy = (lt.y - oy) / LG;
+  g = hBlurG;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalCompositeOperation = 'source-over';
+  g.clearRect(0, 0, LN, LN);
+  g.globalCompositeOperation = 'lighter';
+  g.imageSmoothingEnabled = true;
+  g.globalAlpha = 1 / 8;
+  for (let i = 0; i < 8; i++) {
+    const k = 1 + i * 0.03;
+    g.setTransform(k, 0, 0, k, cx * (1 - k), cy * (1 - k));
+    g.drawImage(hOccCv, 0, 0);
+  }
+  g = hRayG;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalCompositeOperation = 'source-over';
+  g.clearRect(0, 0, LN, LN);
+  g.globalCompositeOperation = 'lighter';
+  g.imageSmoothingEnabled = true;
+  const N2 = 7, DEC = 0.84;
+  let sum = 0;
+  for (let j = 0; j < N2; j++) sum += Math.pow(DEC, j);
+  for (let j = 0; j < N2; j++) {
+    const k = Math.pow(1.24, j);
+    g.globalAlpha = Math.min(1, 1.25 * Math.pow(DEC, j) / sum);
+    g.setTransform(k, 0, 0, k, cx * (1 - k), cy * (1 - k));
+    g.drawImage(hBlurCv, 0, 0);
+  }
+  // 버퍼 가장자리는 부드럽게 사라지게
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalCompositeOperation = 'destination-in';
+  g.globalAlpha = 1;
+  const fade = g.createRadialGradient(LN / 2, LN / 2, LN * 0.24, LN / 2, LN / 2, LN / 2);
+  fade.addColorStop(0, 'rgba(0,0,0,1)'); fade.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = fade;
+  g.fillRect(0, 0, LN, LN);
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, VW, PLAY_H); ctx.clip();
+  ctx.imageSmoothingEnabled = true;
+  ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = I;
+  ctx.drawImage(hRayCv, ox, oy, LR * 2, LR * 2);
+  ctx.restore();
+  ctx.imageSmoothingEnabled = false;
 }
 
 function text(str, x, y, size, fill, opt) {
@@ -1287,11 +1439,13 @@ function render(alpha) {
   ctx.setTransform(S, 0, 0, S, Math.round(ox * S), Math.round(oy * S));
   ctx.imageSmoothingEnabled = false;
 
+  buildHero(env, hy, hr);
   drawSky(sx, env);
 
   // 장애물과 땅은 시간대에 맞춰 색을 덮는다
   drawPipes(camX, env.tintCol, env.tintA);
   drawGodRays(env.light, camX, hy, hr, sx);
+  drawHeroRays(env.light, camX, hy, hr, sx);
   drawGround(sx, env.tintCol, env.tintA);
   drawGroundGlow(env.light, camX);
 
