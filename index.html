@@ -250,7 +250,7 @@ const PALS = [
     bush: '#5fae3a', bushHi: '#86cf52', tint: [255, 255, 255, 0], stars: 0
   },
   { // 1 노을
-    sky: ['#3b2a6b', '#5a3580', '#874089', '#b84d85', '#e06a75', '#f48d68', '#fbb565', '#fdd98a'],
+    sky: ['#3b2a6b', '#5a3580', '#874089', '#b8497c', '#de5468', '#f06a52', '#f68a50', '#fbb070'],
     cloud: '#ffd9c7', cloudSh: '#f3a0a0',
     far: '#b0608a', farSh: '#9a4f7c', farWin: '#c57a95',
     near: '#5e2f66', nearSh: '#4a2355', nearWin: '#7a4379',
@@ -264,7 +264,7 @@ const PALS = [
     bush: '#1f4a3c', bushHi: '#2f6a4c', tint: [8, 14, 62, 0.42], stars: 1
   },
   { // 3 새벽
-    sky: ['#2f3a78', '#4a4a90', '#7a5a9c', '#b0709c', '#dc8c94', '#f2ac90', '#f8cc9c', '#fbe4bc'],
+    sky: ['#2f3a78', '#4a4a90', '#7a5a9c', '#b0689a', '#de707e', '#f2866c', '#f8a674', '#fbc890'],
     cloud: '#ffe6de', cloudSh: '#e6a9b9',
     far: '#9a7aa6', farSh: '#86689a', farWin: '#b08fb6',
     near: '#4a3a6e', nearSh: '#3a2c5c', nearWin: '#62507f',
@@ -462,6 +462,7 @@ function buildMask(img, twU, thU) {
 }
 
 const mix3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+const ramp3 = (lo, mid, hi, t) => t < 0.5 ? mix3(lo, mid, t * 2) : mix3(mid, hi, t * 2 - 2 + 1);
 const rgb = c => 'rgb(' + Math.round(c[0]) + ',' + Math.round(c[1]) + ',' + Math.round(c[2]) + ')';
 const csv = c => Math.round(c[0]) + ',' + Math.round(c[1]) + ',' + Math.round(c[2]);
 
@@ -470,12 +471,13 @@ function sunLight(T) {
   const u = ((T - 0.86 + 1) % 1) / 0.5;
   if (u > 1.08) return { vis: false, weight: 0, k: 0, x: 0, y: 0, r: 1 };
   const x = VW * (0.88 - 0.86 * u), y = PLAY_H + 50 - Math.sin(Math.PI * Math.min(u, 1)) * PLAY_H * 0.78 + Math.max(0, u - 1) * 600;
-  const e = smooth(clamp((PLAY_H - 110 - y) / 250, 0, 1));
+  const e = smooth(clamp((PLAY_H - 170 - y) / 150, 0, 1));
   const r = lerp(44, 26, e);
   return {
     vis: true, sun: true, x, y, r, e,
-    core: mix3([255, 244, 208], [255, 255, 238], e), rgb: mix3([255, 150, 66], [255, 232, 160], e),
-    disc: mix3([255, 214, 130], [255, 243, 160], e), discHi: mix3([255, 238, 190], [255, 251, 224], e),
+    // 고도에 따른 색: 지평선 근처(일출·일몰)는 붉게 → 주황 → 가장 높을 때는 살짝 노란빛
+    core: ramp3([255, 140, 96], [255, 200, 132], [255, 250, 214], e), rgb: ramp3([255, 78, 38], [255, 150, 62], [255, 226, 130], e),
+    disc: ramp3([255, 92, 54], [255, 170, 84], [255, 236, 130], e), discHi: ramp3([255, 146, 96], [255, 208, 140], [255, 248, 196], e),
     k: lerp(0.68, 0.5, e), halo: lerp(400, 300, e), refl: lerp(0.6, 0.22, e),
     weight: smooth(clamp((PLAY_H + r - y) / 70, 0, 1))
   };
@@ -485,9 +487,12 @@ function moonLight(T) {
   if (v < -0.04 || v > 1.04) return { vis: false, weight: 0, k: 0, x: 0, y: 0, r: 1 };
   const vc = clamp(v, 0, 1);
   const x = VW * (0.88 - 0.86 * v), y = PLAY_H + 50 - Math.sin(Math.PI * vc) * PLAY_H * 0.84 + Math.abs(v - vc) * 600;
+  const em = smooth(clamp((PLAY_H - 170 - y) / 170, 0, 1));
   return {
-    vis: true, sun: false, x, y, r: 24, e: 1,
-    core: [236, 243, 255], rgb: [146, 182, 255], disc: [244, 241, 208], discHi: [213, 208, 166],
+    vis: true, sun: false, x, y, r: 24, e: em,
+    // 뜨고 질 때는 살짝 푸르게, 가장 높을 때는 원래의 따뜻한 흰빛
+    core: mix3([198, 220, 255], [236, 243, 255], em), rgb: mix3([104, 146, 255], [146, 182, 255], em),
+    disc: mix3([176, 206, 255], [244, 241, 208], em), discHi: mix3([134, 166, 228], [213, 208, 166], em),
     k: 0.6, halo: 260, refl: 0.35,
     weight: smooth(clamp((PLAY_H + 24 - y) / 70, 0, 1))
   };
@@ -900,8 +905,9 @@ function drawPipes(camX, tintCol, tintA) {
 function drawBloom(lt) {
   const R0 = lt.r * 5;
   const g = ctx.createRadialGradient(lt.x, lt.y, 0, lt.x, lt.y, R0);
-  g.addColorStop(0, 'rgba(' + csv(lt.core) + ',1)');
-  g.addColorStop(0.16, 'rgba(' + csv(lt.core) + ',0.9)');
+  const a0 = lerp(0.4, 1, lt.e);            // 낮게 뜬 해·달은 중심이 하얗게 날아가지 않게 해서 본래 색을 살린다
+  g.addColorStop(0, 'rgba(' + csv(lt.core) + ',' + a0 + ')');
+  g.addColorStop(0.16, 'rgba(' + csv(lt.core) + ',' + a0 * 0.9 + ')');
   g.addColorStop(0.3, 'rgba(' + csv(lt.rgb) + ',0.5)');
   g.addColorStop(0.6, 'rgba(' + csv(lt.rgb) + ',0.14)');
   g.addColorStop(1, 'rgba(' + csv(lt.rgb) + ',0)');
