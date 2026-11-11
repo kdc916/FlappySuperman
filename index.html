@@ -74,6 +74,10 @@ const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d', { alpha: false });
 const safeEl = document.getElementById('safe');
 
+// 성능 자동 조절: 프레임이 계속 밀리면 렌더 해상도를 단계적으로 낮추고, 마지막엔 빛 효과를 끈다
+const DPR_CAPS = [3, 2, 1.5, 1, 1];
+let quality = 0, fxRays = true, slowMs = STEP_GUESS(), slowN = 0;
+function STEP_GUESS() { return 16.7; }
 let cssW = 1, cssH = 1, dpr = 1, scale = 1, S = 1;
 let VW = MIN_W, VH = MIN_H, groundH = MIN_GROUND, heroX = 90, ui = 1;
 const safe = { t: 0, r: 0, b: 0, l: 0 };
@@ -84,7 +88,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 function resize() {
   cssW = Math.max(1, window.innerWidth);
   cssH = Math.max(1, window.innerHeight);
-  dpr = clamp(window.devicePixelRatio || 1, 1, 3);
+  dpr = clamp(window.devicePixelRatio || 1, 1, DPR_CAPS[quality]);
   canvas.style.width = cssW + 'px';
   canvas.style.height = cssH + 'px';
   canvas.width = Math.round(cssW * dpr);
@@ -375,6 +379,26 @@ const CLOUDS = (() => {
   return a;
 })();
 
+/* --- 사실적인 볼류메트릭 라이트 ---
+   화면 공간 광산란(screen-space light scattering) 방식:
+   1) 저해상도 버퍼에 광원의 빛을 그리고, 빛을 가리는 것(기둥·건물·주인공)을 지운다.
+   2) 그 버퍼를 광원 중심으로 여러 번 확대하며 겹쳐 방사형 블러를 만든다.
+   3) 결과를 화면에 가산 합성한다. → 가려진 틈으로 부드러운 빛기둥이 새어 나온다. */
+const GR = 4;                                  // 빛 버퍼 1픽셀 = 4유닛
+const [occCv, occCtx] = makeCanvas(2, 2);
+const [blurCv, blurCtx] = makeCanvas(2, 2);
+const [rayCv, rayCtx] = makeCanvas(2, 2);
+const LIGHTS = [
+  { core: '255,255,238', rgb: '255,232,160', k: 0.52, r: 26, halo: 300, refl: 0.22 },   // 낮의 해
+  { core: '255,246,214', rgb: '255,164,78',  k: 0.72, r: 46, halo: 400, refl: 0.6 },    // 노을
+  { core: '236,243,255', rgb: '146,182,255', k: 0.6,  r: 24, halo: 260, refl: 0.35 }     // 달
+];
+function lightPos(idx) {
+  if (idx === 0) return { x: Math.round(VW * 0.8), y: 236 + safe.t };
+  if (idx === 1) return { x: Math.round(VW * 0.68), y: PLAY_H - 150 };
+  return { x: Math.round(VW * 0.78), y: 108 + safe.t };
+}
+
 /* =========================================================================
    4. 밸런스
    -------------------------------------------------------------------------
@@ -619,22 +643,23 @@ function drawSky(pal, idx, a, sx) {
   // 해 / 달
   const top = safe.t;
   if (idx === 0) {
-    const cx = Math.round(VW * 0.8), cy = 236 + top;
+    const { x: cx, y: cy } = lightPos(0);
     ctx.globalAlpha = a * 0.35; disc(cx, cy, 38, '#fff6c2', 2);
     ctx.globalAlpha = a; disc(cx, cy, 26, '#fff3a0', 2); disc(cx - 4, cy - 4, 16, '#fffbe0', 2);
   } else if (idx === 1) {
-    const cx = Math.round(VW * 0.68), cy = PLAY_H - 150;
+    const { x: cx, y: cy } = lightPos(1);
     ctx.globalAlpha = a * 0.3; disc(cx, cy, 64, '#ffe9a0', 2);
     ctx.globalAlpha = a; disc(cx, cy, 46, '#fff0a8', 2);
     ctx.fillStyle = bands[6];
     ctx.fillRect(cx - 46, cy + 14, 92, 4); ctx.fillRect(cx - 46, cy + 26, 92, 6);
   } else {
-    const cx = Math.round(VW * 0.78), cy = 108 + top;
+    const { x: cx, y: cy } = lightPos(2);
     ctx.globalAlpha = a * 0.18; disc(cx, cy, 36, '#cfd8ff', 2);
     ctx.globalAlpha = a; disc(cx, cy, 24, '#f4f1d0', 2);
     ctx.fillStyle = '#d5d0a6';
     ctx.fillRect(cx - 12, cy - 8, 6, 6); ctx.fillRect(cx + 4, cy + 2, 8, 6); ctx.fillRect(cx - 4, cy + 10, 4, 4);
   }
+  drawBloom(idx, a);
   // 별
   if (pal.stars > 0) {
     ctx.fillStyle = '#ffffff';
@@ -710,6 +735,137 @@ function drawPipes(camX, tintCol, tintA) {
       ctx.globalAlpha = 1;
     }
   }
+}
+
+// 광원 주변의 블룸(번짐). 기둥보다 뒤에 그려 실루엣이 살아나게 한다.
+function drawBloom(idx, a) {
+  const lt = LIGHTS[idx], lp = lightPos(idx), R0 = lt.r * 5;
+  const g = ctx.createRadialGradient(lp.x, lp.y, 0, lp.x, lp.y, R0);
+  g.addColorStop(0, 'rgba(' + lt.core + ',1)');
+  g.addColorStop(0.16, 'rgba(' + lt.core + ',0.9)');
+  g.addColorStop(0.3, 'rgba(' + lt.rgb + ',0.5)');
+  g.addColorStop(0.6, 'rgba(' + lt.rgb + ',0.14)');
+  g.addColorStop(1, 'rgba(' + lt.rgb + ',0)');
+  ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = a * Math.min(1, lt.k * 1.2);
+  ctx.fillStyle = g;
+  ctx.fillRect(lp.x - R0, lp.y - R0, R0 * 2, R0 * 2);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = a;
+}
+
+function drawGodRays(idx, weight, camX, hy, hr, sx) {
+  if (weight <= 0.01 || !fxRays) return;
+  const w = Math.ceil(VW / GR) + 1, h = Math.ceil(PLAY_H / GR);
+  for (const c of [occCv, blurCv, rayCv]) if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  const lt = LIGHTS[idx], lp = lightPos(idx), lx = lp.x, ly = lp.y;
+
+  // 1) 광원 + 차폐물
+  let g = occCtx;
+  g.setTransform(1 / GR, 0, 0, 1 / GR, 0, 0);
+  g.globalCompositeOperation = 'source-over';
+  g.globalAlpha = 1;
+  g.clearRect(0, 0, w * GR, h * GR);
+  const grad = g.createRadialGradient(lx, ly, 0, lx, ly, lt.halo);
+  grad.addColorStop(0, 'rgba(' + lt.core + ',1)');
+  grad.addColorStop(lt.r / lt.halo, 'rgba(' + lt.core + ',1)');
+  grad.addColorStop(lt.r * 2 / lt.halo, 'rgba(' + lt.rgb + ',0.55)');
+  grad.addColorStop(0.5, 'rgba(' + lt.rgb + ',0.12)');
+  grad.addColorStop(1, 'rgba(' + lt.rgb + ',0)');
+  g.fillStyle = grad;
+  g.fillRect(lx - lt.halo, ly - lt.halo, lt.halo * 2, lt.halo * 2);
+
+  g.globalCompositeOperation = 'destination-out';
+  g.imageSmoothingEnabled = false;
+  const tileOcc = (img, offset, y, tw, th, a) => {
+    g.globalAlpha = a;
+    for (let x = -(((offset % tw) + tw) % tw); x < VW; x += tw) g.drawImage(img, x, y, tw + 1, th);
+  };
+  tileOcc(PALS[0].farImg, sx * 0.18, PLAY_H - FAR_H * 2 + 2, FAR_W * 2, FAR_H * 2, 0.8);   // 먼 건물은 대기에 살짝 묻힌다
+  tileOcc(PALS[0].nearImg, sx * 0.38, PLAY_H - NEAR_H * 2 + 2, NEAR_W * 2, NEAR_H * 2, 1);
+  g.globalAlpha = 1;
+  g.fillStyle = '#000';
+  for (const p of pipes) {
+    const x = p.wx - camX + heroX;
+    if (x > VW + 20 || x < -PIPE_W - 20) continue;
+    const c = pipeCenter(p), top = c - p.gap / 2, bot = c + p.gap / 2;
+    g.fillRect(x, -10, PIPE_W, top - CAP_H + 10);
+    g.fillRect(x - CAP_OVER, top - CAP_H, PIPE_W + CAP_OVER * 2, CAP_H);
+    g.fillRect(x - CAP_OVER, bot, PIPE_W + CAP_OVER * 2, CAP_H);
+    g.fillRect(x, bot + CAP_H, PIPE_W, PLAY_H - bot - CAP_H + 10);
+  }
+  g.save();
+  g.translate(heroX, hy); g.rotate(hr);
+  g.drawImage(heroSprite, -HERO_W / 2, -HERO_H / 2, HERO_W, HERO_H);
+  g.fillRect(-30, -9, 36, 8);                                   // 망토
+  g.restore();
+
+  // 2) 방사형 블러: 1차(촘촘하게) → 2차(멀리) 두 단계로 겹쳐 적은 횟수로 긴 빛줄기를 만든다
+  const cx = lx / GR, cy = ly / GR;
+  g = blurCtx;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalCompositeOperation = 'source-over';
+  g.clearRect(0, 0, w, h);
+  g.globalCompositeOperation = 'lighter';
+  g.imageSmoothingEnabled = true;
+  const N1 = 8;
+  g.globalAlpha = 1 / N1;
+  for (let i = 0; i < N1; i++) {
+    const k = 1 + i * 0.028;
+    g.setTransform(k, 0, 0, k, cx * (1 - k), cy * (1 - k));
+    g.drawImage(occCv, 0, 0);
+  }
+  g = rayCtx;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalCompositeOperation = 'source-over';
+  g.clearRect(0, 0, w, h);
+  g.globalCompositeOperation = 'lighter';
+  g.imageSmoothingEnabled = true;
+  const N2 = 8, DEC = 0.87;
+  let sum = 0;
+  for (let j = 0; j < N2; j++) sum += Math.pow(DEC, j);
+  for (let j = 0; j < N2; j++) {
+    const k = Math.pow(1.26, j);
+    g.globalAlpha = Math.pow(DEC, j) / sum;
+    g.setTransform(k, 0, 0, k, cx * (1 - k), cy * (1 - k));
+    g.drawImage(blurCv, 0, 0);
+  }
+
+  // 3) 합성 (부드럽게 확대해서 가산)
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = clamp(weight * lt.k * 1.3, 0, 1);
+  ctx.drawImage(rayCv, 0, 0, w * GR, h * GR);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.imageSmoothingEnabled = false;
+}
+
+// 땅에 비치는 빛 (광원이 기둥에 가리면 약해진다)
+function drawGroundGlow(idx, weight, camX) {
+  if (weight <= 0.01) return;
+  const lt = LIGHTS[idx], lp = lightPos(idx);
+  let open = 1;
+  for (const p of pipes) {
+    const x = p.wx - camX + heroX;
+    const cov = clamp((Math.min(x + PIPE_W, lp.x + lt.r) - Math.max(x, lp.x - lt.r)) / (lt.r * 2), 0, 1);
+    open = Math.min(open, 1 - cov * 0.85);
+  }
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, PLAY_H, VW, VH - PLAY_H); ctx.clip();
+  ctx.translate(lp.x, PLAY_H);
+  ctx.scale(1, 0.55);
+  const R0 = 190;
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, R0);
+  g.addColorStop(0, 'rgba(' + lt.core + ',0.9)');
+  g.addColorStop(0.25, 'rgba(' + lt.rgb + ',0.45)');
+  g.addColorStop(1, 'rgba(' + lt.rgb + ',0)');
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = weight * lt.refl * open;
+  ctx.fillStyle = g;
+  ctx.fillRect(-R0, 0, R0 * 2, R0);
+  ctx.restore();
 }
 
 function drawGround(sx, tintCol, tintA) {
@@ -932,7 +1088,11 @@ function render(alpha) {
   const tintCol = B.tint || A.tint || 'rgba(0,0,0,0)';
   const tintA = B.tint ? (A.tint && phaseBlend < 1 ? 1 : phaseBlend) : (A.tint && phaseBlend < 1 ? 1 - phaseBlend : 0);
   drawPipes(camX, tintCol, tintA);
+  if (phaseBlend < 1) drawGodRays(phaseFrom, 1 - phaseBlend, camX, hy, hr, sx);
+  drawGodRays(phaseTo, phaseBlend, camX, hy, hr, sx);
   drawGround(sx, tintCol, tintA);
+  if (phaseBlend < 1) drawGroundGlow(phaseFrom, 1 - phaseBlend, camX);
+  drawGroundGlow(phaseTo, phaseBlend, camX);
 
   // 잔상 / 스피드 라인 / 파티클
   for (const g of ghosts) {
@@ -1022,6 +1182,12 @@ function frame(now) {
   let dt = now - lastT;
   lastT = now;
   if (dt > 250 || dt < 0) dt = STEP_MS;
+  slowMs = slowMs * 0.95 + dt * 0.05;
+  if (++slowN > 45 && slowMs > 24 && quality < DPR_CAPS.length - 1) {
+    quality++; slowN = 0; slowMs = 16.7;
+    if (quality === DPR_CAPS.length - 1) fxRays = false;
+    resize();
+  }
   acc += dt;
   let n = 0;
   while (acc >= STEP_MS && n < 5) {
@@ -1039,7 +1205,7 @@ requestAnimationFrame(t => { lastT = t; frame(t); });
 window.__game = {
   get state() { return state; }, get score() { return score; },
   get hero() { return hero; }, get pipes() { return pipes; }, get dist() { return dist; },
-  pipeCenter, action,
+  pipeCenter, action, get quality() { return quality; }, set rays(v) { fxRays = v; },
   setScore(n) { score = n; }
 };
 })();
