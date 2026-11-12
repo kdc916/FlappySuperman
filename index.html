@@ -405,6 +405,17 @@ function renderBushes(col, hi) {
 }
 for (const p of PALS) p.bushImg = renderBushes(p.bush, p.bushHi);
 
+// 안개 구간용 검은 실루엣
+function silhouette(img) {
+  const [c, g] = makeCanvas(img.width, img.height);
+  g.drawImage(img, 0, 0);
+  g.globalCompositeOperation = 'source-in';
+  g.fillStyle = '#000'; g.fillRect(0, 0, img.width, img.height);
+  return c;
+}
+FAR.sil = silhouette(FAR.imgs[0]); NEAR.sil = silhouette(NEAR.imgs[0]);
+const bushSil = silhouette(PALS[0].bushImg);
+
 /* --- 흙 타일 --- */
 const DIRT_W = 64, DIRT_H = 32;
 const dirtImg = (() => {
@@ -507,6 +518,17 @@ function computeEnv() {
   const f = a === b ? 0 : smooth(clamp((T - t0) / (t1 - t0), 0, 1));
   const A = PALS[a], B = PALS[b];
   const sun = sunLight(T), moon = moonLight(T);
+  if (fogF > 0.001) {
+    // 안개 구간: 달이 장면 바로 뒤에서 크게 비춘다 (역광)
+    const F = fogF;
+    if (!moon.vis) Object.assign(moon, moonLight(0.61));
+    moon.x = lerp(moon.x, VW * 0.62, F); moon.y = lerp(moon.y, 215, F);
+    moon.r = lerp(moon.r, 36, F); moon.e = lerp(moon.e, 1, F);
+    moon.k = lerp(moon.k, 0.7, F); moon.halo = lerp(moon.halo, Math.max(520, VW * 0.6), F);
+    moon.weight = lerp(moon.weight, 1, F); moon.refl *= 1 - F; moon.fog = F;
+    moon.core = mix3(moon.core, [236, 243, 255], F); moon.rgb = mix3(moon.rgb, [150, 186, 255], F);
+    sun.weight *= 1 - F;
+  }
   return {
     T, a, b, f,
     sky: A.skyRGB.map((c, k) => rgb(mix3(c, B.skyRGB[k], f))),
@@ -560,6 +582,10 @@ function gapFor(n) {
   return Math.round(D.gap0 - (D.gap0 - D.gap1) * tensionAt(n) + intro);
 }
 const spacingFor = n => 236 + 34 * trendAt(n);
+/* 안개 구간 (HARD 전용 기믹)
+   밤마다 한 번, 안개 낀 지역을 지난다. 모든 것이 검은 실루엣이 되고 달빛 빛줄기와 그림자로만 길을 읽어야 한다.
+   첫 밤은 기둥 4개, 이후 밤마다 1개씩 길어진다. 대신 구간 안에서는 틈이 조금 넓고 움직이는 기둥이 없다. */
+const FOG_BASE_LEN = 4, FOG_MAX_LEN = 8, FOG_RAMP = 260, FOG_GAP_BONUS = 14;
 const THEMES = {
   green:  { main: '#74c232', hi: '#b6ee62', hi2: '#93d948', sh: '#559a22', dk: '#3c7417' },
   copper: { main: '#d98a3c', hi: '#ffc77d', hi2: '#eda45a', sh: '#b0652a', dk: '#84451b' },
@@ -590,6 +616,8 @@ let dist = 0, prevDist = 0;          // 게임 진행 거리 (판정용)
 let scrollX = 0, prevScrollX = 0;    // 배경 스크롤 (연출용)
 let pipes = [], pipeIndex = 0, lastWX = 0, lastC = PLAY_H * 0.45;
 let overT = 0, shake = 0, flash = 0;
+let autopilot = false, qualityLock = false;
+let fog = null, fogCount = 0, fogDay = -1, fogF = 0;     // 안개 구간 {start, end}, 지금까지 지난 횟수, 화면에 적용 중인 세기
 let tod = 0, todFF = false;         // 시간대 (정수부 = 지난 날 수), 재시작 시 아침까지 빨리 감기
 
 const hero = { y: PLAY_H * 0.45, prevY: PLAY_H * 0.45, v: 0, rot: 0, prevRot: 0 };
@@ -604,14 +632,17 @@ function resetGame() {
   particles.length = ghosts.length = lines.length = 0;
   overT = 0; shake = 0; flash = 0;
   if (tod - Math.floor(tod) > 0.01) todFF = true;
+  fog = null; fogCount = 0; fogDay = -1;
 }
 
 function spawnPipe() {
   const n = pipeIndex++;
-  const gap = gapFor(n);
+  let gap = gapFor(n);
   const spacing = spacingFor(n);
   const wx = n === 0 ? dist + FIRST_PIPE : lastWX + spacing;
-  const moving = n >= D.moveFrom && Math.random() < D.moveP;
+  const inFog = fog && wx >= fog.start && wx <= fog.end;
+  if (inFog) gap += FOG_GAP_BONUS;
+  const moving = !inFog && n >= D.moveFrom && Math.random() < D.moveP;
   const amp = moving ? D.amp : 0;
 
   // 이전 틈에서 물리적으로 여유 있게 도달할 수 있는 범위 안에서만 다음 틈을 놓는다
@@ -624,13 +655,32 @@ function spawnPipe() {
   const c = lo + Math.random() * Math.max(0, hi - lo);
 
   pipes.push({
-    wx, c, gap, amp, ph: Math.random() * 6.28,
+    n, wx, c, gap, amp, ph: Math.random() * 6.28,
     theme: moving ? 'steel' : (n % 2 ? 'copper' : 'green'),
     passed: false
   });
   lastWX = wx; lastC = c;
 }
 const pipeCenter = p => p.amp ? p.c + Math.sin(tick * 0.04 + p.ph) * p.amp : p.c;
+
+const fogAt = d => !fog ? 0 :
+  smooth(clamp((d - (fog.start - FOG_RAMP)) / FOG_RAMP, 0, 1)) * (1 - smooth(clamp((d - fog.end) / FOG_RAMP, 0, 1)));
+
+function startFog() {
+  // 아직 화면에 보이지 않는 기둥부터 안개 구간으로 만든다
+  const start = dist + Math.max(320, VW - heroX + 80);
+  let first = pipes.find(p => p.wx >= start), n, wx;
+  if (first) { n = first.n; wx = first.wx; } else { n = pipeIndex; wx = lastWX + spacingFor(n); }
+  const T = tod - Math.floor(tod);
+  const room = Math.floor(((0.70 - T) * DAY_LEN - (wx - dist)) / 262);            // 밤이 끝나기 전에 끝나도록
+  const len = clamp(Math.min(FOG_BASE_LEN + fogCount, FOG_MAX_LEN, room), 3, FOG_MAX_LEN);
+  let end = wx;
+  for (let k = 1; k < len; k++) end += spacingFor(n + k);
+  fog = { start: wx - 150, end: end + PIPE_W + 50, len };
+  for (const p of pipes) if (p.wx >= fog.start && p.wx <= fog.end) { p.gap += FOG_GAP_BONUS; p.amp = 0; if (p.theme === 'steel') p.theme = 'green'; }
+  fogCount++;
+  tone('sine', 196, 147, 0.9, 0.14); tone('sine', 294, 220, 0.9, 0.08, 0.05);
+}
 
 function flap() {
   hero.v = FLAP_V;
@@ -696,10 +746,22 @@ function step() {
     spd = speedFor(score);
     dist += spd;
 
+    if (autopilot) {      // 자동 테스트용
+      const np = pipes.find(q => q.wx + PIPE_W > dist - HIT_HW - 1);
+      const tgt = np ? pipeCenter(np) + np.gap / 2 - 26 : 250;
+      if (hero.y > tgt && hero.v > -1) flap();
+    }
     hero.v = Math.min(hero.v + GRAVITY, MAX_FALL);
     hero.y += hero.v;
     if (hero.y < HIT_HH + 2) { hero.y = HIT_HH + 2; hero.v = 0; }
     hero.rot = lerp(hero.rot, clamp(hero.v * 0.075, -0.42, 1.05), 0.22);
+
+    // 안개 구간: HARD에서 밤이 깊어지면 시작
+    if (D.id === 'hard' && !fog && !todFF) {
+      const day = Math.floor(tod), T = tod - day;
+      if (T >= 0.44 && T < 0.56 && fogDay !== day) { fogDay = day; startFog(); }
+    }
+    if (fog && dist > fog.end + FOG_RAMP + 10) fog = null;
 
     while (pipes.length === 0 || lastWX - dist + heroX < VW + 120) spawnPipe();
 
@@ -811,7 +873,17 @@ function drawLayer(Ly, off, env) {
     ctx.globalAlpha = 1;
   }
 }
+const FOG_BASE = 'rgb(13,18,38)', FOG_HAZE = 'rgb(44,56,94)';
+// 레이어 사이에 낀 안개: 옅은 연무 + 달빛에 빛나는 안개(빛줄기 버퍼)를 한 겹 덮는다.
+// 뒤에 있는 레이어일수록 여러 겹이 쌓여 흐려지므로 거리감이 생긴다.
+function fogVeil(haze, glow) {
+  ctx.globalAlpha = fogF * haze; ctx.fillStyle = FOG_HAZE;
+  ctx.fillRect(0, 0, VW, PLAY_H);
+  ctx.globalAlpha = 1;
+  compositeRays(fogF * glow);
+}
 function drawSky(sx, env) {
+  const F = fogF;
   // 하늘: 계단식 그라데이션
   const bands = env.sky, bh = PLAY_H / bands.length;
   for (let i = 0; i < bands.length; i++) {
@@ -819,15 +891,16 @@ function drawSky(sx, env) {
     ctx.fillRect(0, i * bh - 0.5, VW, bh + 1);
   }
   // 별
-  if (env.stars > 0.01) {
+  if (env.stars * (1 - F) > 0.01) {
     ctx.fillStyle = '#ffffff';
     for (const s of STARS) {
-      ctx.globalAlpha = env.stars * (0.55 + 0.45 * Math.sin(tick * 0.05 + s.ph));
+      ctx.globalAlpha = env.stars * (1 - F) * (0.55 + 0.45 * Math.sin(tick * 0.05 + s.ph));
       const sz = s.big ? 4 : 2;
       ctx.fillRect(Math.round(s.fx * VW / 2) * 2, Math.round(s.fy * PLAY_H / 2) * 2, sz, sz);
     }
     ctx.globalAlpha = 1;
   }
+  if (F > 0.001) { ctx.globalAlpha = F * 0.94; ctx.fillStyle = FOG_BASE; ctx.fillRect(0, 0, VW, PLAY_H); ctx.globalAlpha = 1; }
   // 해와 달
   for (const lt of [env.moon, env.sun]) {
     if (!lt.vis || lt.y - lt.r * 5 > PLAY_H) continue;
@@ -835,22 +908,30 @@ function drawSky(sx, env) {
     drawBloom(lt);
   }
   // 구름
-  const span = VW + 260, top = safe.t;
-  for (const c of CLOUDS) {
-    const x = R((((c.fx * span - sx * c.sp) % span) + span) % span - 130), y = c.y + top * 0.5, k = c.k;
-    ctx.fillStyle = env.cloudSh;
-    ctx.fillRect(x + 4 * k, y + 26 * k, 66 * k, 4 * k);
-    ctx.fillStyle = env.cloud;
-    ctx.fillRect(x, y + 12 * k, 74 * k, 16 * k);
-    ctx.fillRect(x + 10 * k, y + 4 * k, 50 * k, 10 * k);
-    ctx.fillRect(x + 22 * k, y - 4 * k, 26 * k, 10 * k);
+  if (F < 0.99) {
+    const span = VW + 260, top = safe.t;
+    ctx.globalAlpha = 1 - F;
+    for (const c of CLOUDS) {
+      const x = R((((c.fx * span - sx * c.sp) % span) + span) % span - 130), y = c.y + top * 0.5, k = c.k;
+      ctx.fillStyle = env.cloudSh;
+      ctx.fillRect(x + 4 * k, y + 26 * k, 66 * k, 4 * k);
+      ctx.fillStyle = env.cloud;
+      ctx.fillRect(x, y + 12 * k, 74 * k, 16 * k);
+      ctx.fillRect(x + 10 * k, y + 4 * k, 50 * k, 10 * k);
+      ctx.fillRect(x + 22 * k, y - 4 * k, 26 * k, 10 * k);
+    }
+    ctx.globalAlpha = 1;
   }
-  // 스카이라인 2겹 + 덤불
+  // 스카이라인 2겹 + 덤불 (안개 구간에서는 검은 실루엣 + 레이어 사이 안개)
+  const sil = (img, off, y, w, h) => { ctx.globalAlpha = F; tile(img, off, y, w, h); ctx.globalAlpha = 1; };
   drawLayer(FAR, sx * 0.18, env);
+  if (F > 0.001) { sil(FAR.sil, sx * 0.18, PLAY_H - FAR_H * 2 + 2, FAR_W * 2, FAR_H * 2); fogVeil(0.3, 0.26); }
   drawLayer(NEAR, sx * 0.38, env);
+  if (F > 0.001) { sil(NEAR.sil, sx * 0.38, PLAY_H - NEAR_H * 2 + 2, NEAR_W * 2, NEAR_H * 2); fogVeil(0.2, 0.16); }
   const by = PLAY_H - BUSH_H * 2;
   tile(PALS[env.a].bushImg, sx * 0.62, by, BUSH_W * 2, BUSH_H * 2);
   if (env.f > 0.003) { ctx.globalAlpha = env.f; tile(PALS[env.b].bushImg, sx * 0.62, by, BUSH_W * 2, BUSH_H * 2); ctx.globalAlpha = 1; }
+  if (F > 0.001) { sil(bushSil, sx * 0.62, by, BUSH_W * 2, BUSH_H * 2); fogVeil(0.1, 0.08); }
 }
 
 function pipePart(x, y, h, t, isCap) {
@@ -919,7 +1000,7 @@ function drawBloom(lt) {
   ctx.globalAlpha = 1;
 }
 
-function drawGodRays(lt, camX, hy, hr, sx) {
+function computeRays(lt, camX, hy, hr, sx) {
   if (!fxRays) return;
   const w = Math.ceil(VW / GR) + 1, h = Math.ceil(PLAY_H / GR);
   for (const c of [occCv, blurCv, rayCv, histCv]) if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
@@ -942,8 +1023,9 @@ function drawGodRays(lt, camX, hy, hr, sx) {
     const grad = g.createRadialGradient(lx, ly, 0, lx, ly, lt.halo);
     grad.addColorStop(0, 'rgba(' + csv(lt.core) + ',1)');
     grad.addColorStop(lt.r / lt.halo, 'rgba(' + csv(lt.core) + ',1)');
-    grad.addColorStop(lt.r * 2 / lt.halo, 'rgba(' + csv(lt.rgb) + ',0.55)');
-    grad.addColorStop(0.5, 'rgba(' + csv(lt.rgb) + ',0.12)');
+    const fg = lt.fog || 0;                                        // 안개 속에서는 빛이 멀리까지 퍼진다
+    grad.addColorStop(lt.r * 2 / lt.halo, 'rgba(' + csv(lt.rgb) + ',' + (0.55 - 0.1 * fg) + ')');
+    grad.addColorStop(0.5, 'rgba(' + csv(lt.rgb) + ',' + (0.12 - 0.02 * fg) + ')');
     grad.addColorStop(1, 'rgba(' + csv(lt.rgb) + ',0)');
     g.fillStyle = grad;
     g.globalAlpha = lt.weight;
@@ -1019,13 +1101,43 @@ function drawGodRays(lt, camX, hy, hr, sx) {
   g.globalCompositeOperation = 'lighter';
   g.drawImage(rayCv, 0, 0);
 
-  // 4) 합성
+}
+// 계산해 둔 빛줄기를 화면에 얹는다 (안개 구간에서는 레이어마다 여러 번 호출된다)
+function compositeRays(a) {
+  if (a <= 0.004) return;
+  if (!fxRays) {
+    // 저사양 폴백: 빛줄기 계산이 꺼져 있어도 안개 구간에서는 달빛 번짐으로 실루엣이 보이게 한다
+    if (fogF <= 0.001) return;
+    const R0 = Math.max(VW, PLAY_H) * 0.8, g = ctx.createRadialGradient(VW * 0.62, 215, 0, VW * 0.62, 215, R0);
+    g.addColorStop(0, 'rgba(210,225,255,0.9)'); g.addColorStop(0.4, 'rgba(150,186,255,0.4)'); g.addColorStop(1, 'rgba(150,186,255,0.08)');
+    ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = a * fogF; ctx.fillStyle = g;
+    ctx.fillRect(0, 0, VW, PLAY_H);
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    return;
+  }
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   ctx.globalCompositeOperation = 'screen';
-  ctx.drawImage(histCv, 0, 0, w * GR, h * GR);
+  ctx.globalAlpha = a;
+  ctx.drawImage(histCv, 0, 0, histCv.width * GR, histCv.height * GR);
+  ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
   ctx.imageSmoothingEnabled = false;
+}
+// 안개 구간: 기둥을 검은 실루엣으로 덮는다
+function blackPipes(camX, a) {
+  if (a <= 0.004) return;
+  ctx.globalAlpha = a; ctx.fillStyle = '#000';
+  for (const p of pipes) {
+    const x = R(p.wx - camX + heroX);
+    if (x > VW + 10 || x < -PIPE_W - 10) continue;
+    const c = pipeCenter(p), top = Math.round(c - p.gap / 2), bot = Math.round(c + p.gap / 2);
+    ctx.fillRect(x, -4, PIPE_W, top - CAP_H + 4);
+    ctx.fillRect(x - CAP_OVER, top - CAP_H, PIPE_W + CAP_OVER * 2, CAP_H);
+    ctx.fillRect(x - CAP_OVER, bot, PIPE_W + CAP_OVER * 2, CAP_H);
+    ctx.fillRect(x, bot + CAP_H, PIPE_W, PLAY_H - bot - CAP_H);
+  }
+  ctx.globalAlpha = 1;
 }
 
 // 땅에 비치는 빛 (광원이 기둥에 가리면 약해진다)
@@ -1153,6 +1265,11 @@ function buildHero(env, hy, hr) {
     g.globalCompositeOperation = 'source-atop';
     g.globalAlpha = clamp(lt.weight * (0.4 + 0.6 * prox) * (lt.sun ? 1 : 0.75), 0, 1);
     g.drawImage(rimCv, 0, 0);
+  }
+  if (fogF > 0.001) {
+    g.globalCompositeOperation = 'source-atop';
+    g.globalAlpha = fogF; g.fillStyle = '#000';
+    g.fillRect(0, 0, HB_W, HB_H);
   }
   g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
 }
@@ -1344,6 +1461,12 @@ function drawUI() {
     ctx.translate(cx, top + 30 + 40 * ui); ctx.scale(k, k);
     text(String(score), 0, 0, 36, '#ffffff', { outline: 10 });
     ctx.restore();
+    if (fog && state === 'PLAYING' && dist < fog.start + 120 && (tick >> 4) & 1) {
+      ctx.save();
+      ctx.translate(cx, top + 30 + 66 * ui); ctx.scale(ui, ui);
+      text('FOG ZONE', 0, 0, 12, '#cfe0ff', { outline: 5 });
+      ctx.restore();
+    }
   }
 
   if (state === 'READY') {
@@ -1436,6 +1559,7 @@ function render(alpha) {
   const hr = lerp(hero.prevRot, hero.rot, alpha);
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  fogF = fogAt(camX);
   const env = computeEnv();
   ctx.fillStyle = env.sky[0];
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1446,30 +1570,34 @@ function render(alpha) {
   ctx.imageSmoothingEnabled = false;
 
   buildHero(env, hy, hr);
+  computeRays(env.light, camX, hy, hr, sx);
   drawSky(sx, env);
 
   // 장애물과 땅은 시간대에 맞춰 색을 덮는다
   drawPipes(camX, env.tintCol, env.tintA);
-  drawGodRays(env.light, camX, hy, hr, sx);
+  blackPipes(camX, fogF);
+  compositeRays(1);
+  blackPipes(camX, fogF * 0.82);          // 기둥은 가장 앞이라 안개가 거의 끼지 않는다 → 가장 검다
   drawHeroRays(env.light, camX, hy, hr, sx);
   drawGround(sx, env.tintCol, env.tintA);
+  if (fogF > 0.001) { ctx.globalAlpha = fogF; ctx.fillStyle = '#000'; ctx.fillRect(0, PLAY_H - 2, VW, VH - PLAY_H + 2); ctx.globalAlpha = 1; }
   drawGroundGlow(env.light, camX);
 
   // 잔상 / 스피드 라인 / 파티클
   for (const g of ghosts) {
     ctx.save();
-    ctx.globalAlpha = Math.max(0, g.a);
+    ctx.globalAlpha = Math.max(0, g.a) * (1 - fogF);
     ctx.translate(R(g.x), R(g.y)); ctx.rotate(g.rot);
     ctx.drawImage(heroGhost, -HERO_W / 2, -HERO_H / 2, HERO_W, HERO_H);
     ctx.restore();
   }
   ctx.fillStyle = '#ffffff';
   for (const l of lines) {
-    ctx.globalAlpha = Math.max(0, l.a);
+    ctx.globalAlpha = Math.max(0, l.a) * (1 - fogF);
     ctx.fillRect(R(l.x - l.len), Math.round(l.y / 2) * 2, l.len, 2);
   }
   for (const p of particles) {
-    ctx.globalAlpha = clamp(p.life * 1.4, 0, 1);
+    ctx.globalAlpha = clamp(p.life * 1.4, 0, 1) * (1 - fogF * 0.9);
     ctx.fillStyle = p.color;
     ctx.fillRect(R(p.x), R(p.y), p.size, p.size);
   }
@@ -1556,7 +1684,7 @@ function frame(now) {
   lastT = now;
   if (dt > 250 || dt < 0) dt = STEP_MS;
   slowMs = slowMs * 0.95 + dt * 0.05;
-  if (++slowN > 45 && slowMs > 24 && quality < DPR_CAPS.length - 1) {
+  if (++slowN > 45 && slowMs > 24 && quality < DPR_CAPS.length - 1 && !qualityLock) {
     quality++; slowN = 0; slowMs = 16.7;
     if (quality === DPR_CAPS.length - 1) fxRays = false;
     resize();
@@ -1580,7 +1708,8 @@ window.__game = {
   get hero() { return hero; }, get pipes() { return pipes; }, get dist() { return dist; },
   pipeCenter, action, get quality() { return quality; }, set rays(v) { fxRays = v; },
   rayLum() { const d = histCtx.getImageData(0, 0, histCv.width, histCv.height).data; let t = 0; for (let i = 0; i < d.length; i += 4) t += (d[i] + d[i + 1] + d[i + 2]) * d[i + 3] / 255; return t / (d.length / 4) / 3; },
-  setScore(n) { score = n; }, setDiff, gapFor, speedFor,
+  set autopilot(v) { autopilot = v; }, set qualityLock(v) { qualityLock = v; },
+  setScore(n) { score = n; }, setDiff, startFog, get fog() { return fog; }, get fogF() { return fogF; }, gapFor, speedFor,
   get tod() { return tod; }, set tod(v) { tod = v; }, get diff() { return D.id; }
 };
 })();
