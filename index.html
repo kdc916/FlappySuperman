@@ -549,7 +549,7 @@ const STEP_MS = 1000 / 60;
 const GRAVITY = 0.27;
 const FLAP_V = -5.7;         // 점프 높이 약 60유닛
 const MAX_FALL = 9.5;
-const PIPE_W = 62;
+const PIPE_W = 62, W_THIN = 44, W_WIDE = 108;   // 기둥 두께: 기본 / 얇은 쌍기둥 / 두꺼운 벽
 const CAP_H = 26, CAP_OVER = 4;
 const HIT_HW = 13, HIT_HH = 8;   // 캐릭터 판정 (보이는 것보다 약간 작게)
 const FIRST_PIPE = 400;          // 시작 후 첫 장애물까지 거리 (어느 화면이든 동일)
@@ -559,9 +559,9 @@ const RETRY_DELAY = 40;          // 게임오버 직후 실수로 재시작되�
 /* 난이도. 어려움 = 기존 수치(단, 시작 구간은 더 넓게).
    gap0→gap1: 틈 크기, sp0→sp1: 속도, ramp: 최고 난이도에 도달하는 점수 */
 const DIFFS = [
-  { id: 'easy',   name: 'EASY',   col: '#7be06a', gap0: 232, gap1: 176, sp0: 2.0,  sp1: 2.6,  ramp: 60, moveFrom: 1e9, moveP: 0,    amp: 0 },
-  { id: 'normal', name: 'NORMAL', col: '#ffd23f', gap0: 212, gap1: 154, sp0: 2.2,  sp1: 3.0,  ramp: 50, moveFrom: 28,  moveP: 0.18, amp: 16 },
-  { id: 'hard',   name: 'HARD',   col: '#ff6b6b', gap0: 196, gap1: 134, sp0: 2.35, sp1: 3.35, ramp: 42, moveFrom: 18,  moveP: 0.28, amp: 20 }
+  { id: 'easy',   name: 'EASY',   col: '#7be06a', gap0: 222, gap1: 165, sp0: 2.1,  sp1: 2.8,  ramp: 55, moveFrom: 36, moveP: 0.12, amp: 12, variety: 0.6 },
+  { id: 'normal', name: 'NORMAL', col: '#ffd23f', gap0: 204, gap1: 144, sp0: 2.28, sp1: 3.18, ramp: 46, moveFrom: 22, moveP: 0.24, amp: 18, variety: 0.85 },
+  { id: 'hard',   name: 'HARD',   col: '#ff6b6b', gap0: 188, gap1: 126, sp0: 2.45, sp1: 3.5,  ramp: 38, moveFrom: 14, moveP: 0.32, amp: 22, variety: 1 }
 ];
 let diffIdx = 1;
 try { const v = DIFFS.findIndex(d => d.id === localStorage.getItem('flappy_hero_diff')); if (v >= 0) diffIdx = v; } catch (e) {}
@@ -589,6 +589,8 @@ const FOG_BASE_LEN = 4, FOG_MAX_LEN = 8, FOG_RAMP = 260, FOG_GAP_BONUS = 14;
 const THEMES = {
   green:  { main: '#74c232', hi: '#b6ee62', hi2: '#93d948', sh: '#559a22', dk: '#3c7417' },
   copper: { main: '#d98a3c', hi: '#ffc77d', hi2: '#eda45a', sh: '#b0652a', dk: '#84451b' },
+  aqua:    { main: '#3fb8c9', hi: '#a6f0f5', hi2: '#6fd6e2', sh: '#2a8fa3', dk: '#1b6577' },
+  crimson: { main: '#d9506a', hi: '#ffa9b6', hi2: '#ee7a8e', sh: '#b0354f', dk: '#7f2238' },
   steel:  { main: '#8a7fd6', hi: '#cfc8ff', hi2: '#a79df0', sh: '#665bb4', dk: '#463d8a' }  // 움직이는 기둥
 };
 
@@ -628,6 +630,7 @@ function resetGame() {
   score = 0; shownScore = 0; scorePop = 0; newBest = false;
   dist = prevDist = 0;
   pipes = []; pipeIndex = 0; lastWX = 0; lastC = PLAY_H * 0.45;
+  pat = { type: 'rand', left: 0, i: 0 }; lastW = PIPE_W;
   hero.y = hero.prevY = PLAY_H * 0.45; hero.v = 0; hero.rot = hero.prevRot = 0;
   particles.length = ghosts.length = lines.length = 0;
   overT = 0; shake = 0; flash = 0;
@@ -635,33 +638,101 @@ function resetGame() {
   fog = null; fogCount = 0; fogDay = -1;
 }
 
+/* 장애물 패턴
+   기둥을 하나씩 무작위로 놓는 대신, 2~5개짜리 "패턴"을 이어 붙인다. 패턴마다 간격·두께·높이 변화가 달라
+   리듬이 계속 바뀐다. 어떤 패턴이든 이전 틈에서 물리적으로 닿을 수 있는 범위(maxD) 안에서만 배치된다.
+     rand   : 완전 무작위 (간격도 들쭉날쭉)
+     stairs : 계단 - 한 방향으로 일정하게 오르내림, 촘촘한 간격
+     zigzag : 지그재그 - 위아래를 크게 번갈아
+     tunnel : 터널 - 같은 높이의 기둥 3개가 바짝 붙음
+     leap   : 도약 - 긴 간격 뒤에 닿을 수 있는 한계까지 높이 변화
+     wide   : 두꺼운 벽 - 오래 버텨야 하는 긴 통로
+     pair   : 얇은 쌍기둥 - 아주 가까운 두 개, 높이가 살짝 어긋남 */
+const PLAIN = ['green', 'copper', 'aqua', 'crimson'];
+const PATTERNS = [['rand', 3], ['stairs', 2], ['zigzag', 2], ['tunnel', 1.5], ['leap', 1.3], ['wide', 1.3], ['pair', 1.3]];
+let pat = { type: 'rand', left: 0, i: 0 }, lastW = PIPE_W;
+const rnd = (a, b) => a + Math.random() * (b - a);
+function nextPattern(n) {
+  const theme = PLAIN[Math.floor(Math.random() * PLAIN.length)];
+  if (n < 4) return { type: 'rand', left: 4 - n, i: 0, theme: null };          // 시작 구간은 단순하게
+  let type = 'rand';
+  if (Math.random() < D.variety) {
+    const opts = PATTERNS.filter(o => o[0] !== pat.type);                      // 같은 패턴이 연달아 나오지 않게
+    let r = Math.random() * opts.reduce((a, o) => a + o[1], 0);
+    for (const o of opts) { r -= o[1]; if (r <= 0) { type = o[0]; break; } }
+  }
+  const dir = Math.random() < 0.5 ? -1 : 1;
+  switch (type) {
+    case 'stairs': return { type, left: 3 + (Math.random() < 0.5 ? 1 : 0), i: 0, theme, dir, step: rnd(55, 90) };
+    case 'zigzag': return { type, left: 3 + Math.floor(Math.random() * 3), i: 0, theme, dir, step: rnd(0.72, 0.95) };
+    case 'tunnel': return { type, left: 3, i: 0, theme };
+    case 'leap':   return { type, left: 1, i: 0, theme };
+    case 'wide':   return { type, left: Math.random() < 0.35 ? 2 : 1, i: 0, theme };
+    case 'pair':   return { type, left: 2, i: 0, theme, dir };
+    default:       return { type: 'rand', left: 2 + Math.floor(Math.random() * 3), i: 0, theme: null };
+  }
+}
+
 function spawnPipe() {
   const n = pipeIndex++;
-  let gap = gapFor(n);
-  const spacing = spacingFor(n);
+  if (pat.left <= 0) pat = nextPattern(n);
+  const first = pat.i === 0;
+  pat.i++; pat.left--;
+
+  // 틈 크기: 난이도 곡선 + 기둥마다 약간의 편차
+  let gap = Math.max(gapFor(n) + Math.round(rnd(-5, 12)), D.gap1 - 4);
+  let sm = rnd(0.9, 1.2), w = PIPE_W;
+  switch (pat.type) {
+    case 'stairs': sm = 0.86; break;
+    case 'zigzag': sm = 1.02; break;
+    case 'tunnel': sm = first ? 1.1 : 0.7; gap += 8; break;
+    case 'leap':   sm = 1.32; break;
+    case 'wide':   w = W_WIDE; sm = 1.15; gap += 12; break;
+    case 'pair':   w = W_THIN; sm = first ? 1.08 : 0.6; break;
+  }
+  // 간격: 직전 기둥을 빠져나온 뒤 최소한의 여유(108)는 항상 보장
+  const spacing = Math.max(spacingFor(n) * sm + (lastW - PIPE_W), lastW + 108);
   const wx = n === 0 ? dist + FIRST_PIPE : lastWX + spacing;
-  const inFog = fog && wx >= fog.start && wx <= fog.end;
+  const inFog = fog && n >= fog.firstN && n <= fog.lastN;
   if (inFog) gap += FOG_GAP_BONUS;
-  const moving = !inFog && n >= D.moveFrom && Math.random() < D.moveP;
-  const amp = moving ? D.amp : 0;
+  const moving = !inFog && w === PIPE_W && (pat.type === 'rand' || pat.type === 'leap') && n >= D.moveFrom && Math.random() < D.moveP * 1.6;
+  const amp = moving ? D.amp * rnd(0.7, 1.15) : 0;
 
   // 이전 틈에서 물리적으로 여유 있게 도달할 수 있는 범위 안에서만 다음 틈을 놓는다
-  const travel = (spacing - PIPE_W) / speedFor(n);
-  const maxD = n < 3 ? 80 : Math.min(travel * 2.1, 210);
+  const travel = (spacing - lastW) / speedFor(n);
+  const maxD = n < 3 ? 80 : Math.min(travel * 2.1, 230);
   let lo = PIPE_MARGIN + gap / 2 + amp;
   let hi = PLAY_H - PIPE_MARGIN - gap / 2 - amp;
+  const lo0 = lo, hi0 = hi;
   lo = Math.max(lo, lastC - maxD);
   hi = Math.min(hi, lastC + maxD);
-  const c = lo + Math.random() * Math.max(0, hi - lo);
+  if (lo > hi) lo = hi = clamp(lastC, lo0, hi0);
+  let c;
+  switch (pat.type) {
+    case 'stairs':
+      c = lastC + pat.dir * pat.step;
+      if (c < lo0 || c > hi0) { pat.dir *= -1; c = lastC + pat.dir * pat.step; }
+      break;
+    case 'zigzag':
+      if (lastC + pat.dir * 40 < lo0 || lastC + pat.dir * 40 > hi0) pat.dir *= -1;
+      c = lastC + pat.dir * pat.step * maxD; pat.dir *= -1;
+      break;
+    case 'tunnel': c = first ? rnd(lo, hi) : lastC + rnd(-8, 8); break;
+    case 'leap':   c = lastC - lo0 > hi0 - lastC ? lastC - maxD * 0.95 : lastC + maxD * 0.95; break;
+    case 'pair':   c = first ? rnd(lo, hi) : lastC + pat.dir * rnd(22, 46); break;
+    default:       c = rnd(lo, hi);
+  }
+  c = clamp(c, lo, hi);
 
   pipes.push({
-    n, wx, c, gap, amp, ph: Math.random() * 6.28,
-    theme: moving ? 'steel' : (n % 2 ? 'copper' : 'green'),
+    n, wx, w, c, gap, amp, sp: rnd(0.03, 0.055), ph: Math.random() * 6.28,
+    theme: moving ? 'steel' : (pat.theme || PLAIN[Math.floor(Math.random() * PLAIN.length)]),
     passed: false
   });
-  lastWX = wx; lastC = c;
+  if (fog && n === fog.lastN) fog.end = wx + w + 50;
+  lastWX = wx; lastC = c; lastW = w;
 }
-const pipeCenter = p => p.amp ? p.c + Math.sin(tick * 0.04 + p.ph) * p.amp : p.c;
+const pipeCenter = p => p.amp ? p.c + Math.sin(tick * p.sp + p.ph) * p.amp : p.c;
 
 const fogAt = d => !fog ? 0 :
   smooth(clamp((d - (fog.start - FOG_RAMP)) / FOG_RAMP, 0, 1)) * (1 - smooth(clamp((d - fog.end) / FOG_RAMP, 0, 1)));
@@ -674,10 +745,11 @@ function startFog() {
   const T = tod - Math.floor(tod);
   const room = Math.floor(((0.70 - T) * DAY_LEN - (wx - dist)) / 262);            // 밤이 끝나기 전에 끝나도록
   const len = clamp(Math.min(FOG_BASE_LEN + fogCount, FOG_MAX_LEN, room), 3, FOG_MAX_LEN);
-  let end = wx;
-  for (let k = 1; k < len; k++) end += spacingFor(n + k);
-  fog = { start: wx - 150, end: end + PIPE_W + 50, len };
-  for (const p of pipes) if (p.wx >= fog.start && p.wx <= fog.end) { p.gap += FOG_GAP_BONUS; p.amp = 0; if (p.theme === 'steel') p.theme = 'green'; }
+  fog = { start: wx - 150, end: Infinity, firstN: n, lastN: n + len - 1, len };     // end는 마지막 기둥이 생성될 때 확정
+  for (const p of pipes) if (p.n >= fog.firstN && p.n <= fog.lastN) {
+    p.gap += FOG_GAP_BONUS; p.amp = 0; if (p.theme === 'steel') p.theme = 'green';
+    if (p.n === fog.lastN) fog.end = p.wx + p.w + 50;
+  }
   fogCount++;
   tone('sine', 196, 147, 0.9, 0.14); tone('sine', 294, 220, 0.9, 0.08, 0.05);
 }
@@ -747,7 +819,7 @@ function step() {
     dist += spd;
 
     if (autopilot) {      // 자동 테스트용
-      const np = pipes.find(q => q.wx + PIPE_W > dist - HIT_HW - 1);
+      const np = pipes.find(q => q.wx + q.w > dist - HIT_HW - 1);
       const tgt = np ? pipeCenter(np) + np.gap / 2 - 26 : 250;
       if (hero.y > tgt && hero.v > -1) flap();
     }
@@ -767,16 +839,16 @@ function step() {
 
     for (let i = 0; i < pipes.length; i++) {
       const p = pipes[i];
-      if (dist + HIT_HW > p.wx - 2 && dist - HIT_HW < p.wx + PIPE_W + 2) {
+      if (dist + HIT_HW > p.wx - 2 && dist - HIT_HW < p.wx + p.w + 2) {
         const c = pipeCenter(p);
         if (hero.y - HIT_HH < c - p.gap / 2 || hero.y + HIT_HH > c + p.gap / 2) { die(false); break; }
       }
-      if (!p.passed && p.wx + PIPE_W < dist - HIT_HW) {
+      if (!p.passed && p.wx + p.w < dist - HIT_HW) {
         p.passed = true;
         score++; scorePop = 1;
         sfx.score();
       }
-      if (p.wx - dist + heroX < -PIPE_W - 40) { pipes.splice(i, 1); i--; }
+      if (p.wx - dist + heroX < -p.w - 40) { pipes.splice(i, 1); i--; }
     }
     if (state === 'PLAYING' && hero.y + HIT_HH >= PLAY_H) die(true);
 
@@ -934,9 +1006,10 @@ function drawSky(sx, env) {
   if (F > 0.001) { sil(bushSil, sx * 0.62, by, BUSH_W * 2, BUSH_H * 2); fogVeil(0.1, 0.08); }
 }
 
+let PW = PIPE_W;        // 지금 그리는 기둥의 두께
 function pipePart(x, y, h, t, isCap) {
   if (h <= 0) return;
-  const w = isCap ? PIPE_W + CAP_OVER * 2 : PIPE_W;
+  const w = isCap ? PW + CAP_OVER * 2 : PW;
   if (isCap) x -= CAP_OVER;
   ctx.fillStyle = INK;      ctx.fillRect(x, y, w, h);
   const ix = x + 3, iw = w - 6, iy = isCap ? y + 3 : y, ih = isCap ? h - 6 : h;
@@ -954,29 +1027,30 @@ function pipePart(x, y, h, t, isCap) {
 function drawPipes(camX, tintCol, tintA) {
   for (const p of pipes) {
     const x = R(p.wx - camX + heroX);
-    if (x > VW + 10 || x < -PIPE_W - 10) continue;
+    if (x > VW + 10 || x < -p.w - 10) continue;
     const t = THEMES[p.theme];
+    PW = p.w;
     const c = pipeCenter(p);
     const top = Math.round(c - p.gap / 2), bot = Math.round(c + p.gap / 2);
     // 위 기둥: 화면 맨 위(노치 포함)까지 이어진다
     pipePart(x, -4, top - CAP_H + 4, t, false);
-    ctx.fillStyle = t.dk; ctx.fillRect(x + 3, top - CAP_H - 4, PIPE_W - 6, 4);
+    ctx.fillStyle = t.dk; ctx.fillRect(x + 3, top - CAP_H - 4, p.w - 6, 4);
     pipePart(x, top - CAP_H, CAP_H, t, true);
     // 아래 기둥
     pipePart(x, bot + CAP_H, PLAY_H - bot - CAP_H, t, false);
-    ctx.fillStyle = t.dk; ctx.fillRect(x + 3, bot + CAP_H, PIPE_W - 6, 4);
+    ctx.fillStyle = t.dk; ctx.fillRect(x + 3, bot + CAP_H, p.w - 6, 4);
     pipePart(x, bot, CAP_H, t, true);
     if (p.amp) {    // 움직이는 기둥 표시등
       ctx.fillStyle = (tick >> 3) & 1 ? '#fff27a' : '#ff5d8f';
-      ctx.fillRect(x + PIPE_W / 2 - 3, top - 16, 6, 6);
-      ctx.fillRect(x + PIPE_W / 2 - 3, bot + 10, 6, 6);
+      ctx.fillRect(x + p.w / 2 - 3, top - 16, 6, 6);
+      ctx.fillRect(x + p.w / 2 - 3, bot + 10, 6, 6);
     }
     if (tintA > 0) {
       ctx.globalAlpha = tintA; ctx.fillStyle = tintCol;
-      ctx.fillRect(x, -4, PIPE_W, top - CAP_H + 4);
-      ctx.fillRect(x - CAP_OVER, top - CAP_H, PIPE_W + CAP_OVER * 2, CAP_H);
-      ctx.fillRect(x - CAP_OVER, bot, PIPE_W + CAP_OVER * 2, CAP_H);
-      ctx.fillRect(x, bot + CAP_H, PIPE_W, PLAY_H - bot - CAP_H);
+      ctx.fillRect(x, -4, p.w, top - CAP_H + 4);
+      ctx.fillRect(x - CAP_OVER, top - CAP_H, p.w + CAP_OVER * 2, CAP_H);
+      ctx.fillRect(x - CAP_OVER, bot, p.w + CAP_OVER * 2, CAP_H);
+      ctx.fillRect(x, bot + CAP_H, p.w, PLAY_H - bot - CAP_H);
       ctx.globalAlpha = 1;
     }
   }
@@ -1043,12 +1117,12 @@ function computeRays(lt, camX, hy, hr, sx) {
     g.fillStyle = '#000';
     for (const p of pipes) {
       const x = p.wx - camX + heroX;
-      if (x > VW + 20 || x < -PIPE_W - 20) continue;
+      if (x > VW + 20 || x < -p.w - 20) continue;
       const c = pipeCenter(p), top = c - p.gap / 2, bot = c + p.gap / 2;
-      g.fillRect(x, -10, PIPE_W, top - CAP_H + 10);
-      g.fillRect(x - CAP_OVER, top - CAP_H, PIPE_W + CAP_OVER * 2, CAP_H);
-      g.fillRect(x - CAP_OVER, bot, PIPE_W + CAP_OVER * 2, CAP_H);
-      g.fillRect(x, bot + CAP_H, PIPE_W, PLAY_H - bot - CAP_H + 10);
+      g.fillRect(x, -10, p.w, top - CAP_H + 10);
+      g.fillRect(x - CAP_OVER, top - CAP_H, p.w + CAP_OVER * 2, CAP_H);
+      g.fillRect(x - CAP_OVER, bot, p.w + CAP_OVER * 2, CAP_H);
+      g.fillRect(x, bot + CAP_H, p.w, PLAY_H - bot - CAP_H + 10);
     }
     g.save();
     g.translate(heroX, hy); g.rotate(hr);
@@ -1130,12 +1204,12 @@ function blackPipes(camX, a) {
   ctx.globalAlpha = a; ctx.fillStyle = '#000';
   for (const p of pipes) {
     const x = R(p.wx - camX + heroX);
-    if (x > VW + 10 || x < -PIPE_W - 10) continue;
+    if (x > VW + 10 || x < -p.w - 10) continue;
     const c = pipeCenter(p), top = Math.round(c - p.gap / 2), bot = Math.round(c + p.gap / 2);
-    ctx.fillRect(x, -4, PIPE_W, top - CAP_H + 4);
-    ctx.fillRect(x - CAP_OVER, top - CAP_H, PIPE_W + CAP_OVER * 2, CAP_H);
-    ctx.fillRect(x - CAP_OVER, bot, PIPE_W + CAP_OVER * 2, CAP_H);
-    ctx.fillRect(x, bot + CAP_H, PIPE_W, PLAY_H - bot - CAP_H);
+    ctx.fillRect(x, -4, p.w, top - CAP_H + 4);
+    ctx.fillRect(x - CAP_OVER, top - CAP_H, p.w + CAP_OVER * 2, CAP_H);
+    ctx.fillRect(x - CAP_OVER, bot, p.w + CAP_OVER * 2, CAP_H);
+    ctx.fillRect(x, bot + CAP_H, p.w, PLAY_H - bot - CAP_H);
   }
   ctx.globalAlpha = 1;
 }
@@ -1146,7 +1220,7 @@ function drawGroundGlow(lt, camX) {
   let open = 1;
   for (const p of pipes) {
     const x = p.wx - camX + heroX;
-    const cov = clamp((Math.min(x + PIPE_W, lt.x + lt.r) - Math.max(x, lt.x - lt.r)) / (lt.r * 2), 0, 1);
+    const cov = clamp((Math.min(x + p.w, lt.x + lt.r) - Math.max(x, lt.x - lt.r)) / (lt.r * 2), 0, 1);
     open = Math.min(open, 1 - cov * 0.85);
   }
   ctx.save();
@@ -1323,12 +1397,12 @@ function drawHeroRays(lt, camX, hy, hr, sx) {
   g.fillRect(ox, PLAY_H, LR * 2, LR * 2);
   for (const p of pipes) {
     const x = p.wx - camX + heroX;
-    if (x > ox + LR * 2 || x + PIPE_W < ox) continue;
+    if (x > ox + LR * 2 || x + p.w < ox) continue;
     const c = pipeCenter(p), top = c - p.gap / 2, bot = c + p.gap / 2;
-    g.fillRect(x, oy - 10, PIPE_W, top - CAP_H - oy + 10);
-    g.fillRect(x - CAP_OVER, top - CAP_H, PIPE_W + CAP_OVER * 2, CAP_H);
-    g.fillRect(x - CAP_OVER, bot, PIPE_W + CAP_OVER * 2, CAP_H);
-    g.fillRect(x, bot + CAP_H, PIPE_W, PLAY_H - bot - CAP_H + 10);
+    g.fillRect(x, oy - 10, p.w, top - CAP_H - oy + 10);
+    g.fillRect(x - CAP_OVER, top - CAP_H, p.w + CAP_OVER * 2, CAP_H);
+    g.fillRect(x - CAP_OVER, bot, p.w + CAP_OVER * 2, CAP_H);
+    g.fillRect(x, bot + CAP_H, p.w, PLAY_H - bot - CAP_H + 10);
   }
   g.save();
   g.translate(heroX, hy); g.rotate(hr);
@@ -1708,7 +1782,9 @@ window.__game = {
   get hero() { return hero; }, get pipes() { return pipes; }, get dist() { return dist; },
   pipeCenter, action, get quality() { return quality; }, set rays(v) { fxRays = v; },
   rayLum() { const d = histCtx.getImageData(0, 0, histCv.width, histCv.height).data; let t = 0; for (let i = 0; i < d.length; i += 4) t += (d[i] + d[i + 1] + d[i + 2]) * d[i + 3] / 255; return t / (d.length / 4) / 3; },
-  set autopilot(v) { autopilot = v; }, set qualityLock(v) { qualityLock = v; },
+  set autopilot(v) { autopilot = v; },
+  sim(maxScore, maxSteps) { let k = 0; while (state === 'PLAYING' && score < maxScore && k < maxSteps) { step(); k++; } return { score, state, k, pat: pat.type }; },
+  reset() { resetGame(); todFF = false; tod = 0; }, set qualityLock(v) { qualityLock = v; },
   setScore(n) { score = n; }, setDiff, startFog, get fog() { return fog; }, get fogF() { return fogF; }, gapFor, speedFor,
   get tod() { return tod; }, set tod(v) { tod = v; }, get diff() { return D.id; }
 };
