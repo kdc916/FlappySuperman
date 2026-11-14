@@ -556,33 +556,49 @@ const FIRST_PIPE = 400;          // 시작 후 첫 장애물까지 거리 (어�
 const PIPE_MARGIN = 54;          // 틈이 천장/바닥에서 떨어져야 하는 최소 거리
 const RETRY_DELAY = 40;          // 게임오버 직후 실수로 재시작되는 것을 막는 프레임
 
-/* 난이도. 어려움 = 기존 수치(단, 시작 구간은 더 넓게).
-   gap0→gap1: 틈 크기, sp0→sp1: 속도, ramp: 최고 난이도에 도달하는 점수 */
+/* 난이도.  gap0→gap1: 틈 크기(기준선), sp0→sp1: 속도, ramp: 기준선이 최고에 도달하는 점수,
+   move*: 움직이는 기둥, variety: 특수 패턴 비율, fog: 밤의 안개 구간 여부 */
 const DIFFS = [
-  { id: 'easy',   name: 'EASY',   col: '#7be06a', gap0: 222, gap1: 165, sp0: 2.1,  sp1: 2.8,  ramp: 55, moveFrom: 36, moveP: 0.12, amp: 12, variety: 0.6 },
-  { id: 'normal', name: 'NORMAL', col: '#ffd23f', gap0: 204, gap1: 144, sp0: 2.28, sp1: 3.18, ramp: 46, moveFrom: 22, moveP: 0.24, amp: 18, variety: 0.85 },
-  { id: 'hard',   name: 'HARD',   col: '#ff6b6b', gap0: 188, gap1: 126, sp0: 2.45, sp1: 3.5,  ramp: 38, moveFrom: 14, moveP: 0.32, amp: 22, variety: 1 }
+  { id: 'easy',   name: 'EASY',   col: '#7be06a', gap0: 204, gap1: 144, sp0: 2.28, sp1: 3.18, ramp: 46, moveFrom: 22, moveP: 0.24, amp: 18, variety: 0.85, fog: false },
+  { id: 'normal', name: 'NORMAL', col: '#ffd23f', gap0: 188, gap1: 126, sp0: 2.45, sp1: 3.5,  ramp: 38, moveFrom: 14, moveP: 0.32, amp: 22, variety: 1,    fog: false },
+  { id: 'hard',   name: 'HARD',   col: '#ff9a3d', gap0: 176, gap1: 116, sp0: 2.6,  sp1: 3.75, ramp: 32, moveFrom: 10, moveP: 0.38, amp: 24, variety: 1,    fog: true },
+  { id: 'hell',   name: 'HELL',   col: '#ff4d5e', gap0: 164, gap1: 108, sp0: 2.8,  sp1: 4.1,  ramp: 24, moveFrom: 5,  moveP: 0.45, amp: 26, variety: 1,    fog: true }
 ];
+const MIN_GAP = 100;                    // 어떤 경우에도 이보다 좁아지지 않는다 (물리적 한계 보호)
 let diffIdx = 1;
-try { const v = DIFFS.findIndex(d => d.id === localStorage.getItem('flappy_hero_diff')); if (v >= 0) diffIdx = v; } catch (e) {}
+try { const v = DIFFS.findIndex(d => d.id === localStorage.getItem('flappy_hero_diff2')); if (v >= 0) diffIdx = v; } catch (e) {}
 let D = DIFFS[diffIdx];
 
-/* 난이도 굴곡: 14개 기둥을 한 주기로, 10~11개 동안 점점 조여졌다가 3~4개 동안 풀어 준다.
-   전체 추세(trend)는 서서히 올라가므로 "점점 어려워지되 중간중간 숨 돌릴 구간"이 생긴다. */
-const WAVE = 14;
-function waveAt(n) {
-  const p = (n % WAVE) / WAVE;
-  return p < 0.75 ? smooth(p / 0.75) : 1 - smooth((p - 0.75) / 0.25);
+/* 난이도 리듬 (모든 난이도 공통)
+   판마다 "프레이즈"를 이어 붙여 긴장도 그래프를 만든다. 한 프레이즈는
+     빌드업(3~6개, 점점 조임) → 클라이맥스(2~3개, 기준선을 넘는 가장 어려운 순간) → 휴식(2~4개, 확 풀림)
+   으로 이루어지고 길이·높이가 매번 달라서 그래프가 불규칙하게 오르락내리락한다.
+   클라이맥스의 shape는 1을 넘는다(1.05~1.3). 즉 EASY라도 잠깐은 EASY 기준선보다 어려운 구간이 나오고,
+   HELL이라도 휴식 구간에서는 숨을 돌릴 수 있다. */
+let track = [];
+function shapeAt(n) {
+  while (track.length <= n) {
+    const quick = track.length > 8 && Math.random() < 0.25;          // 가끔은 짧고 급한 프레이즈
+    const build = quick ? 2 : 3 + Math.floor(Math.random() * 4);
+    const climax = quick ? 1 : 2 + Math.floor(Math.random() * 2);
+    const rest = 2 + Math.floor(Math.random() * 3);
+    const peak = 1.05 + Math.random() * 0.25, low = 0.22 + Math.random() * 0.22;
+    for (let i = 0; i < build; i++) track.push(lerp(low + 0.18, 0.96, smooth((i + 1) / build)));
+    for (let i = 0; i < climax; i++) track.push(peak);
+    for (let i = 0; i < rest; i++) track.push(low);
+  }
+  return track[n];
 }
 const trendAt = n => Math.min(1, n / D.ramp);
-const tensionAt = n => trendAt(n) * (0.45 + 0.55 * waveAt(n));              // 0(쉬움) ~ 1(최고)
-const speedFor = n => D.sp0 + (D.sp1 - D.sp0) * trendAt(n) * (0.85 + 0.15 * waveAt(n));
+const baseAt = n => 0.35 + 0.65 * trendAt(n);                       // 기준선: 처음부터 리듬이 느껴지도록 0.35에서 출발
+const tensionAt = n => baseAt(n) * shapeAt(n);                      // 0(가장 쉬움) ~ 1(기준선 최고) ~ 1.3(클라이맥스)
+const speedFor = n => D.sp0 + (D.sp1 - D.sp0) * trendAt(n) * (0.8 + 0.2 * Math.min(1, shapeAt(n)));
 function gapFor(n) {
   const intro = n < 4 ? (4 - n) * 6 : 0;                                    // 처음 몇 개는 더 넓게
-  return Math.round(D.gap0 - (D.gap0 - D.gap1) * tensionAt(n) + intro);
+  return Math.max(MIN_GAP, Math.round(D.gap0 - (D.gap0 - D.gap1) * tensionAt(n) + intro));
 }
 const spacingFor = n => 236 + 34 * trendAt(n);
-/* 안개 구간 (HARD 전용 기믹)
+/* 안개 구간 (HARD·HELL 전용 기믹)
    밤마다 한 번, 안개 낀 지역을 지난다. 모든 것이 검은 실루엣이 되고 달빛 빛줄기와 그림자로만 길을 읽어야 한다.
    첫 밤은 기둥 4개, 이후 밤마다 1개씩 길어진다. 대신 구간 안에서는 틈이 조금 넓고 움직이는 기둥이 없다. */
 const FOG_BASE_LEN = 4, FOG_MAX_LEN = 8, FOG_RAMP = 260, FOG_GAP_BONUS = 14;
@@ -602,15 +618,14 @@ let paused = false;
 let tick = 0;
 let score = 0, shownScore = 0, scorePop = 0;
 let newBest = false;
-const bests = { easy: 0, normal: 0, hard: 0 };       // 난이도별 최고 기록
+const bests = { easy: 0, normal: 0, hard: 0, hell: 0 };       // 난이도별 최고 기록
 try {
-  for (const d of DIFFS) bests[d.id] = parseInt(localStorage.getItem('flappy_hero_best_' + d.id), 10) || 0;
-  bests.hard = Math.max(bests.hard, parseInt(localStorage.getItem('flappy_hero_best'), 10) || 0);   // 이전 버전 기록
+  for (const d of DIFFS) bests[d.id] = parseInt(localStorage.getItem('flappy_hero_best2_' + d.id), 10) || 0;   // 난이도 기준이 바뀌어 기록 키를 새로 쓴다
 } catch (e) {}
 function setDiff(i) {
   if (i < 0 || i >= DIFFS.length || i === diffIdx) return;
-  diffIdx = i; D = DIFFS[i];
-  try { localStorage.setItem('flappy_hero_diff', D.id); } catch (e) {}
+  diffIdx = i; D = DIFFS[i]; track = [];
+  try { localStorage.setItem('flappy_hero_diff2', D.id); } catch (e) {}
   tone('square', 520 + i * 130, 520 + i * 130, 0.07, 0.12);
 }
 
@@ -630,7 +645,7 @@ function resetGame() {
   score = 0; shownScore = 0; scorePop = 0; newBest = false;
   dist = prevDist = 0;
   pipes = []; pipeIndex = 0; lastWX = 0; lastC = PLAY_H * 0.45;
-  pat = { type: 'rand', left: 0, i: 0 }; lastW = PIPE_W;
+  pat = { type: 'rand', left: 0, i: 0 }; lastW = PIPE_W; lastGap = 200; track = [];
   hero.y = hero.prevY = PLAY_H * 0.45; hero.v = 0; hero.rot = hero.prevRot = 0;
   particles.length = ghosts.length = lines.length = 0;
   overT = 0; shake = 0; flash = 0;
@@ -650,13 +665,13 @@ function resetGame() {
      pair   : 얇은 쌍기둥 - 아주 가까운 두 개, 높이가 살짝 어긋남 */
 const PLAIN = ['green', 'copper', 'aqua', 'crimson'];
 const PATTERNS = [['rand', 3], ['stairs', 2], ['zigzag', 2], ['tunnel', 1.5], ['leap', 1.3], ['wide', 1.3], ['pair', 1.3]];
-let pat = { type: 'rand', left: 0, i: 0 }, lastW = PIPE_W;
+let pat = { type: 'rand', left: 0, i: 0 }, lastW = PIPE_W, lastGap = 200;
 const rnd = (a, b) => a + Math.random() * (b - a);
 function nextPattern(n) {
   const theme = PLAIN[Math.floor(Math.random() * PLAIN.length)];
   if (n < 4) return { type: 'rand', left: 4 - n, i: 0, theme: null };          // 시작 구간은 단순하게
   let type = 'rand';
-  if (Math.random() < D.variety) {
+  if (shapeAt(n) > 0.5 && Math.random() < D.variety) {                         // 휴식 구간은 단순한 배치로
     const opts = PATTERNS.filter(o => o[0] !== pat.type);                      // 같은 패턴이 연달아 나오지 않게
     let r = Math.random() * opts.reduce((a, o) => a + o[1], 0);
     for (const o of opts) { r -= o[1]; if (r <= 0) { type = o[0]; break; } }
@@ -680,7 +695,7 @@ function spawnPipe() {
   pat.i++; pat.left--;
 
   // 틈 크기: 난이도 곡선 + 기둥마다 약간의 편차
-  let gap = Math.max(gapFor(n) + Math.round(rnd(-5, 12)), D.gap1 - 4);
+  let gap = Math.max(gapFor(n) + Math.round(rnd(-4, 10)), MIN_GAP);
   let sm = rnd(0.9, 1.2), w = PIPE_W;
   switch (pat.type) {
     case 'stairs': sm = 0.86; break;
@@ -695,8 +710,9 @@ function spawnPipe() {
   const wx = n === 0 ? dist + FIRST_PIPE : lastWX + spacing;
   const inFog = fog && n >= fog.firstN && n <= fog.lastN;
   if (inFog) gap += FOG_GAP_BONUS;
-  const moving = !inFog && w === PIPE_W && (pat.type === 'rand' || pat.type === 'leap') && n >= D.moveFrom && Math.random() < D.moveP * 1.6;
+  const moving = !inFog && w === PIPE_W && (pat.type === 'rand' || pat.type === 'leap') && shapeAt(n) > 0.5 && n >= D.moveFrom && Math.random() < D.moveP * 1.6;
   const amp = moving ? D.amp * rnd(0.7, 1.15) : 0;
+  if (moving) gap = Math.max(gap, Math.round(110 + amp));          // 움직이는 기둥은 흔들리는 만큼 여유를 둔다
 
   // 이전 틈에서 물리적으로 여유 있게 도달할 수 있는 범위 안에서만 다음 틈을 놓는다
   const travel = (spacing - lastW) / speedFor(n);
@@ -704,8 +720,12 @@ function spawnPipe() {
   let lo = PIPE_MARGIN + gap / 2 + amp;
   let hi = PLAY_H - PIPE_MARGIN - gap / 2 - amp;
   const lo0 = lo, hi0 = hi;
+  // 내려가는 쪽은 더 엄격하다: 직전 기둥을 빠져나오며 날갯짓했다면 한동안은 오히려 떠오르기 때문.
+  // (날갯짓 직후 t프레임 뒤의 높이 변화 = 0.135t² - 5.7t) + 두 틈 안에서 쓸 수 있는 여유분만큼만 허용한다.
+  const slack = 0.6 * ((lastGap + gap) / 2 - HIT_HH * 2) - 6;
+  const maxDown = n < 3 ? 80 : clamp(GRAVITY / 2 * travel * travel + FLAP_V * travel + slack, 0, maxD);
   lo = Math.max(lo, lastC - maxD);
-  hi = Math.min(hi, lastC + maxD);
+  hi = Math.min(hi, lastC + maxDown);
   if (lo > hi) lo = hi = clamp(lastC, lo0, hi0);
   let c;
   switch (pat.type) {
@@ -718,19 +738,19 @@ function spawnPipe() {
       c = lastC + pat.dir * pat.step * maxD; pat.dir *= -1;
       break;
     case 'tunnel': c = first ? rnd(lo, hi) : lastC + rnd(-8, 8); break;
-    case 'leap':   c = lastC - lo0 > hi0 - lastC ? lastC - maxD * 0.95 : lastC + maxD * 0.95; break;
-    case 'pair':   c = first ? rnd(lo, hi) : lastC + pat.dir * rnd(22, 46); break;
+    case 'leap':   c = lastC - lo > hi - lastC ? lo + (hi - lo) * 0.04 : hi - (hi - lo) * 0.04; break;
+    case 'pair':   c = first ? rnd(lo, hi) : (lastC - 46 < lo0 ? lastC + rnd(0, 30) : lastC - rnd(22, 46)); break;
     default:       c = rnd(lo, hi);
   }
   c = clamp(c, lo, hi);
 
   pipes.push({
-    n, wx, w, c, gap, amp, sp: rnd(0.03, 0.055), ph: Math.random() * 6.28,
+    n, wx, w, c, gap, amp, sp: rnd(0.03, 0.055), ph: Math.random() * 6.28, pt: pat.type, dc: Math.round(c - lastC), tr: Math.round(travel),
     theme: moving ? 'steel' : (pat.theme || PLAIN[Math.floor(Math.random() * PLAIN.length)]),
     passed: false
   });
   if (fog && n === fog.lastN) fog.end = wx + w + 50;
-  lastWX = wx; lastC = c; lastW = w;
+  lastWX = wx; lastC = c; lastW = w; lastGap = gap;
 }
 const pipeCenter = p => p.amp ? p.c + Math.sin(tick * p.sp + p.ph) * p.amp : p.c;
 
@@ -772,7 +792,7 @@ function die(onGround) {
   shake = 10; flash = 1;
   if (score > bests[D.id]) {
     bests[D.id] = score; newBest = true;
-    try { localStorage.setItem('flappy_hero_best_' + D.id, String(score)); } catch (e) {}
+    try { localStorage.setItem('flappy_hero_best2_' + D.id, String(score)); } catch (e) {}
   }
   for (let i = 0; i < 14; i++) {
     const a = Math.random() * 6.28, sp = 1.5 + Math.random() * 3.5;
@@ -829,7 +849,7 @@ function step() {
     hero.rot = lerp(hero.rot, clamp(hero.v * 0.075, -0.42, 1.05), 0.22);
 
     // 안개 구간: HARD에서 밤이 깊어지면 시작
-    if (D.id === 'hard' && !fog && !todFF) {
+    if (D.fog && !fog && !todFF) {
       const day = Math.floor(tod), T = tod - day;
       if (T >= 0.44 && T < 0.56 && fogDay !== day) { fogDay = day; startFog(); }
     }
@@ -1518,9 +1538,9 @@ function drawMute() {
 
 const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
 
-const DIFF_BW = 86, DIFF_BH = 34;
+const DIFF_BW = 68, DIFF_BH = 34;
 function diffRects() {
-  const bw = DIFF_BW * ui, bh = DIFF_BH * ui, gap = 8 * ui, total = bw * 3 + gap * 2;
+  const bw = DIFF_BW * ui, bh = DIFF_BH * ui, gap = 5 * ui, total = bw * DIFFS.length + gap * (DIFFS.length - 1);
   const x0 = VW / 2 - total / 2, y = PLAY_H * 0.45 + 132 * ui;
   return DIFFS.map((d, i) => ({ x: x0 + i * (bw + gap), y, w: bw, h: bh }));
 }
@@ -1572,7 +1592,7 @@ function drawUI() {
       ctx.fillStyle = sel ? d.col : '#3a3458'; ctx.fillRect(3, 3, DIFF_BW - 6, DIFF_BH - 6);
       ctx.fillStyle = sel ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.1)'; ctx.fillRect(3, 3, DIFF_BW - 6, 3);
       ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.fillRect(3, DIFF_BH - 7, DIFF_BW - 6, 4);
-      text(d.name, DIFF_BW / 2, DIFF_BH / 2 + 5, 10, sel ? INK : '#aaa4c8', { outline: 0 });
+      text(d.name, DIFF_BW / 2, DIFF_BH / 2 + 5, 9, sel ? INK : '#aaa4c8', { outline: 0 });
       if (sel) { ctx.fillStyle = '#ffffff'; ctx.fillRect(DIFF_BW / 2 - 5, DIFF_BH + 5, 10, 2); ctx.fillRect(DIFF_BW / 2 - 3, DIFF_BH + 3, 6, 2); ctx.fillRect(DIFF_BW / 2 - 1, DIFF_BH + 1, 2, 2); }
       ctx.restore();
     });
@@ -1733,7 +1753,7 @@ window.addEventListener('keydown', e => {
   } else if (state === 'READY' && (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'KeyA' || e.code === 'KeyD')) {
     e.preventDefault(); initAudio();
     setDiff(clamp(diffIdx + (e.code === 'ArrowLeft' || e.code === 'KeyA' ? -1 : 1), 0, DIFFS.length - 1));
-  } else if (state === 'READY' && /^Digit[1-3]$/.test(e.code)) {
+  } else if (state === 'READY' && /^Digit[1-4]$/.test(e.code)) {
     initAudio(); setDiff(+e.code.slice(5) - 1);
   } else if (e.code === 'KeyM') {
     initAudio(); setMuted(!muted);
@@ -1783,8 +1803,9 @@ window.__game = {
   pipeCenter, action, get quality() { return quality; }, set rays(v) { fxRays = v; },
   rayLum() { const d = histCtx.getImageData(0, 0, histCv.width, histCv.height).data; let t = 0; for (let i = 0; i < d.length; i += 4) t += (d[i] + d[i + 1] + d[i + 2]) * d[i + 3] / 255; return t / (d.length / 4) / 3; },
   set autopilot(v) { autopilot = v; },
-  sim(maxScore, maxSteps) { let k = 0; while (state === 'PLAYING' && score < maxScore && k < maxSteps) { step(); k++; } return { score, state, k, pat: pat.type }; },
+  sim(maxScore, maxSteps) { let k = 0; while (state === 'PLAYING' && score < maxScore && k < maxSteps) { step(); k++; } const dp = pipes.find(q => q.wx + q.w > dist - HIT_HW - 4); return { score, state, k, pat: dp ? dp.pt : '-', dp: dp ? { gap: dp.gap, amp: Math.round(dp.amp), w: dp.w, dc: dp.dc, tr: dp.tr, hy: Math.round(hero.y - pipeCenter(dp)) } : null }; },
   reset() { resetGame(); todFF = false; tod = 0; }, set qualityLock(v) { qualityLock = v; },
+  tensionAt, shapeAt,
   setScore(n) { score = n; }, setDiff, startFog, get fog() { return fog; }, get fogF() { return fogF; }, gapFor, speedFor,
   get tod() { return tod; }, set tod(v) { tod = v; }, get diff() { return D.id; }
 };
